@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Brain, Mail, Lock, Eye, EyeOff, User, ArrowRight, ArrowLeft, CheckCircle, Calendar, Clock, Lightbulb, StickyNote, TrendingUp, Activity, Bell, Plus, Mic, MessageCircle, Send, Volume2, Home } from 'lucide-react';
+import { Brain, Mail, Lock, Eye, EyeOff, User, ArrowRight, ArrowLeft, CheckCircle, Calendar, Clock, Lightbulb, StickyNote, TrendingUp, Activity, Bell, Plus, Mic, MessageCircle, Send, Volume2, Home, MessageSquare, Zap, Check, ChevronLeft, ChevronRight, FileText, Settings } from 'lucide-react';
 
 type Screen = 'welcome' | 'login' | 'signup' | 'onboarding' | 'dashboard' | 'voiceflow' | 'calendar' | 'settings';
 
