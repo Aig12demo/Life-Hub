@@ -1,5 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { Brain, Mail, Lock, Eye, EyeOff, User, ArrowRight, ArrowLeft, CheckCircle, Calendar, Clock, Lightbulb, StickyNote, TrendingUp, Activity, Bell, Plus, Mic, MessageCircle, Send, Volume2, Home, MessageSquare, Zap, Check, ChevronLeft, ChevronRight, FileText, Settings } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Brain, Mail, Lock, Eye, EyeOff, User, ArrowRight, ArrowLeft, CheckCircle, Calendar, Clock, Lightbulb, StickyNote, TrendingUp, Activity, Bell, Plus, Mic, MessageCircle, Send, Volume2, Home, MessageSquare, Zap, Check, ChevronLeft, ChevronRight, FileText, Settings, MicOff, Square, Play, Pause } from 'lucide-react';
+import { useSpeechRecognition } from './hooks/useSpeechRecognition';
+import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
+import { Message, VoiceFlowState } from './types/voiceflow';
 
 type Screen = 'welcome' | 'login' | 'signup' | 'onboarding' | 'dashboard' | 'voiceflow' | 'calendar' | 'settings';
 
@@ -20,6 +23,21 @@ function App() {
     confirmPassword: ''
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputMessage, setInputMessage] = useState('');
+  const [voiceFlowState, setVoiceFlowState] = useState<VoiceFlowState>({
+    isListening: false,
+    isProcessing: false,
+    isSpeaking: false,
+    error: null,
+  });
+  
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const processingTimeoutRef = useRef<NodeJS.Timeout>();
+  
+  // Speech recognition and synthesis hooks
+  const speechRecognition = useSpeechRecognition();
+  const speechSynthesis = useSpeechSynthesis();
 
   const features = [
     {
@@ -54,6 +72,195 @@ function App() {
     }, 100);
     return () => clearTimeout(timer);
   }, []);
+
+  // Auto-scroll to latest message
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  // Handle speech recognition results
+  useEffect(() => {
+    if (speechRecognition.transcript && !voiceFlowState.isProcessing) {
+      handleVoiceMessage(speechRecognition.transcript);
+      speechRecognition.resetTranscript();
+    }
+  }, [speechRecognition.transcript]);
+
+  // Update voice flow state based on speech recognition
+  useEffect(() => {
+    setVoiceFlowState(prev => ({
+      ...prev,
+      isListening: speechRecognition.isListening,
+      error: speechRecognition.error,
+    }));
+  }, [speechRecognition.isListening, speechRecognition.error]);
+
+  // Update voice flow state based on speech synthesis
+  useEffect(() => {
+    setVoiceFlowState(prev => ({
+      ...prev,
+      isSpeaking: speechSynthesis.isSpeaking,
+    }));
+  }, [speechSynthesis.isSpeaking]);
+
+  // Process voice command via Supabase Edge Function
+  const processVoiceCommand = async (message: string): Promise<string> => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      throw new Error('Supabase configuration missing. Please set up your Supabase project.');
+    }
+
+    const conversationHistory = messages.slice(-10).map(msg => ({
+      role: msg.type === 'user' ? 'user' as const : 'assistant' as const,
+      content: msg.content,
+    }));
+
+    const response = await fetch(`${supabaseUrl}/functions/v1/process-voice-command`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${supabaseAnonKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message,
+        conversationHistory,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to process voice command');
+    }
+
+    return data.response;
+  };
+
+  // Handle voice message processing
+  const handleVoiceMessage = async (transcript: string) => {
+    if (!transcript.trim()) return;
+
+    // Add user message
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      type: 'user',
+      content: transcript,
+      timestamp: new Date(),
+      isVoice: true,
+    };
+
+    setMessages(prev => [...prev, userMessage]);
+    setVoiceFlowState(prev => ({ ...prev, isProcessing: true, error: null }));
+
+    try {
+      // Process the command
+      const response = await processVoiceCommand(transcript);
+
+      // Add assistant response
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        type: 'assistant',
+        content: response,
+        timestamp: new Date(),
+        isVoice: true,
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
+
+      // Speak the response
+      speechSynthesis.speak(response);
+
+    } catch (error) {
+      console.error('Voice command processing error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
+      
+      setVoiceFlowState(prev => ({ ...prev, error: errorMessage }));
+      
+      // Add error message to chat
+      const errorResponse: Message = {
+        id: (Date.now() + 1).toString(),
+        type: 'assistant',
+        content: `I'm sorry, I encountered an error: ${errorMessage}`,
+        timestamp: new Date(),
+      };
+      
+      setMessages(prev => [...prev, errorResponse]);
+    } finally {
+      setVoiceFlowState(prev => ({ ...prev, isProcessing: false }));
+    }
+  };
+
+  // Handle text message
+  const handleTextMessage = async (message: string) => {
+    if (!message.trim()) return;
+
+    setInputMessage('');
+    await handleVoiceMessage(message);
+  };
+
+  // Toggle microphone
+  const toggleMicrophone = () => {
+    if (voiceFlowState.isListening) {
+      speechRecognition.stopListening();
+    } else {
+      if (!speechRecognition.isSupported) {
+        setVoiceFlowState(prev => ({ 
+          ...prev, 
+          error: 'Speech recognition is not supported in your browser' 
+        }));
+        return;
+      }
+      speechRecognition.startListening();
+    }
+  };
+
+  // Stop all speech
+  const stopSpeech = () => {
+    speechSynthesis.stop();
+    speechRecognition.stopListening();
+  };
+
+  // Clear conversation
+  const clearConversation = () => {
+    setMessages([]);
+    speechSynthesis.stop();
+    speechRecognition.resetTranscript();
+    setVoiceFlowState({
+      isListening: false,
+      isProcessing: false,
+      isSpeaking: false,
+      error: null,
+    });
+  };
+
+  // Get current status text
+  const getStatusText = () => {
+    if (voiceFlowState.error) return voiceFlowState.error;
+    if (voiceFlowState.isProcessing) return 'Processing...';
+    if (voiceFlowState.isSpeaking) return 'Speaking...';
+    if (voiceFlowState.isListening) return 'Listening...';
+    if (speechRecognition.interimTranscript) return `"${speechRecognition.interimTranscript}"`;
+    return 'Ready to Assist';
+  };
+
+  // Get status color
+  const getStatusColor = () => {
+    if (voiceFlowState.error) return 'text-red-500';
+    if (voiceFlowState.isProcessing) return 'text-yellow-500';
+    if (voiceFlowState.isSpeaking) return 'text-green-500';
+    if (voiceFlowState.isListening) return 'text-red-500';
+    return 'text-gray-600';
+  };
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -1118,167 +1325,250 @@ function App() {
     </div>
   );
 
-  if (currentScreen === 'voiceflow') {
+  const VoiceFlowAssistant = () => {
+    const quickSuggestions = [
+      "What's on my schedule today?",
+      "Help me prioritize my tasks",
+      "Set a reminder for tomorrow",
+      "Show me my productivity insights"
+    ];
+
     return (
-      <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 flex flex-col">
+      <div className="min-h-screen bg-gray-50 flex flex-col">
         {/* Header */}
-        <div className="bg-white/80 backdrop-blur-sm border-b border-gray-200 px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <button
-                onClick={() => setCurrentScreen('welcome')}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5 text-gray-600" />
-              </button>
-              <div className="flex items-center space-x-2">
-                <Brain className="w-6 h-6 text-blue-600" />
-                <h1 className="text-xl font-bold text-gray-800">Talk to VoiceFlow</h1>
-              </div>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
-              <span className="text-sm text-gray-600">{isListening ? 'Listening...' : 'Ready'}</span>
+        <div className="bg-white border-b border-gray-200 px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={() => setCurrentScreen('dashboard')}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5 text-gray-600" />
+            </button>
+            <button
+              onClick={() => setCurrentScreen('welcome')}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            >
+              <Home className="w-5 h-5 text-gray-600" />
+            </button>
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900">Talk to VoiceFlow</h1>
+              <p className={`text-sm ${getStatusColor()}`}>{getStatusText()}</p>
             </div>
           </div>
         </div>
 
-        {/* Main Content */}
-        <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full px-6 py-8">
-          {/* Conversation History */}
-          <div className="flex-1 mb-8 space-y-4 overflow-y-auto">
-            {conversationHistory.length === 0 ? (
-              <div className="text-center py-12">
-                <div className="mb-6">
-                  <div className="w-24 h-24 mx-auto bg-gradient-to-br from-blue-100 to-teal-100 rounded-full flex items-center justify-center">
-                    <MessageCircle className="w-12 h-12 text-blue-600" />
-                  </div>
-                </div>
-                <h2 className="text-2xl font-bold text-gray-800 mb-2">Ready to Assist</h2>
-                <p className="text-gray-600 mb-6">Ask me anything about your schedule, tasks, or let me help organize your day.</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto">
-                  {[
-                    "What's on my schedule today?",
-                    "Help me prioritize my tasks",
-                    "Set a reminder for tomorrow",
-                    "Show me my productivity insights"
-                  ].map((suggestion, index) => (
-                    <button
-                      key={index}
-                      onClick={() => handleSendMessage(suggestion)}
-                      className="p-4 bg-white rounded-xl border border-gray-200 hover:border-blue-300 hover:shadow-md transition-all duration-200 text-left"
-                    >
-                      <span className="text-gray-700">{suggestion}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {conversationHistory.map((message, index) => (
-                  <div
+        {/* Chat Messages Area */}
+        <div className="flex-1 overflow-y-auto px-4 py-6">
+          {messages.length === 0 ? (
+            <div className="text-center py-12">
+              <h2 className="text-xl font-semibold text-gray-800 mb-2">Ready to Assist</h2>
+              <p className="text-gray-600 mb-8">Ask me anything about your schedule, tasks, or let me help organize your day.</p>
+              
+              {/* Quick Suggestions */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto mb-8">
+                {quickSuggestions.map((suggestion, index) => (
+                  <button
                     key={index}
-                    className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}
-                    style={{ animationDelay: `${index * 0.1}s` }}
+                    className={`
+                      bg-white rounded-lg p-4 text-left border border-gray-200
+                      hover:border-blue-300 hover:shadow-md transition-all duration-200
+                    `}
+                    onClick={() => handleTextMessage(suggestion)}
                   >
-                    <div className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl ${
+                    <span className="text-gray-700">{suggestion}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex items-start ${message.type === 'user' ? 'justify-end' : 'justify-start'} space-x-2`}
+                >
+                  <div
+                    className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
                       message.type === 'user'
                         ? 'bg-blue-600 text-white'
-                        : 'bg-white border border-gray-200 text-gray-800'
-                    }`}>
-                      <p className="text-sm">{message.text}</p>
-                      <p className={`text-xs mt-1 ${
-                        message.type === 'user' ? 'text-blue-100' : 'text-gray-500'
-                      }`}>
-                        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                    </div>
+                        : 'bg-white text-gray-800 border border-gray-200'
+                    }`}
+                  >
+                    {message.type === 'assistant' && (
+                      <div className="flex items-center space-x-2 mb-1">
+                        <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
+                          <Brain className="w-3 h-3 text-blue-600" />
+                        </div>
+                        <span className="text-xs text-gray-500">VoiceFlow Assistant™</span>
+                        {message.isVoice && <Mic className="w-3 h-3 text-blue-500" />}
+                      </div>
+                    )}
+                    <p className="text-sm">{message.content}</p>
+                    {message.type === 'user' && message.isVoice && <Mic className="w-3 h-3 text-blue-500 mt-1" />}
+                    <p className="text-xs text-gray-400 mt-1">
+                      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Voice Interface */}
+        <div className="px-4 py-6 bg-gradient-to-t from-blue-50 to-white border-t border-gray-100">
+          <div className="flex flex-col items-center space-y-4">
+            {/* Voice Visualizer */}
+            {voiceFlowState.isListening && (
+              <div className="flex items-center space-x-1">
+                {[...Array(5)].map((_, i) => (
+                  <div
+                    key={i}
+                    className="w-1 bg-red-400 rounded-full animate-pulse"
+                    style={{
+                      height: `${Math.random() * 20 + 10}px`,
+                      animationDelay: `${i * 0.1}s`,
+                      animationDuration: '0.5s',
+                    }}
+                  />
                 ))}
               </div>
             )}
-          </div>
 
-          {/* Voice Visualizer */}
-          <div className="flex justify-center mb-8">
-            <div className="relative">
-              <button
-                onClick={handleVoiceToggle}
-                className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 ${
-                  isListening
-                    ? 'bg-red-500 hover:bg-red-600 shadow-lg shadow-red-200 animate-pulse'
-                    : 'bg-gradient-to-br from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 shadow-lg hover:shadow-xl'
-                }`}
-              >
-                <Mic className="w-8 h-8 text-white" />
-              </button>
-              
-              {/* Voice Waves Animation */}
-              {isListening && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  {[...Array(3)].map((_, i) => (
-                    <div
-                      key={i}
-                      className="absolute w-20 h-20 border-2 border-red-300 rounded-full animate-ping"
-                      style={{
-                        animationDelay: `${i * 0.5}s`,
-                        animationDuration: '1.5s'
-                      }}
-                    ></div>
-                  ))}
-                </div>
+            {/* Control Buttons */}
+            <div className="flex items-center space-x-4">
+              {/* Stop Button (when speaking or processing) */}
+              {(voiceFlowState.isSpeaking || voiceFlowState.isProcessing) && (
+                <button
+                  onClick={stopSpeech}
+                  className="p-3 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors duration-200 shadow-lg"
+                >
+                  <Square className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* Main Microphone Button */}
+              <div className="relative">
+                {voiceFlowState.isListening && (
+                  <div className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-75" />
+                )}
+                <button
+                  onClick={toggleMicrophone}
+                  disabled={voiceFlowState.isProcessing || voiceFlowState.isSpeaking}
+                  className={`relative p-6 rounded-full shadow-lg transition-all duration-200 ${
+                    voiceFlowState.isListening
+                      ? 'bg-red-500 text-white scale-110'
+                      : voiceFlowState.isProcessing || voiceFlowState.isSpeaking
+                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                      : 'bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:from-blue-600 hover:to-blue-700 hover:scale-105'
+                  }`}
+                >
+                  {voiceFlowState.isListening ? (
+                    <MicOff className="w-8 h-8" />
+                  ) : (
+                    <Mic className="w-8 h-8" />
+                  )}
+                </button>
+              </div>
+
+              {/* Clear Conversation Button */}
+              {messages.length > 0 && (
+                <button
+                  onClick={clearConversation}
+                  className="p-3 bg-gray-500 text-white rounded-full hover:bg-gray-600 transition-colors duration-200 shadow-lg"
+                  title="Clear conversation"
+                >
+                  <FileText className="w-5 h-5" />
+                </button>
               )}
             </div>
-          </div>
 
-          {/* Text Input */}
-          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm">
-            <div className="flex items-center p-4">
-              <input
-                type="text"
-                value={voiceText}
-                onChange={(e) => setVoiceText(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSendMessage(voiceText)}
-                placeholder="Type your message or use voice..."
-                className="flex-1 bg-transparent border-none outline-none text-gray-800 placeholder-gray-500"
-              />
-              <button
-                onClick={() => handleSendMessage(voiceText)}
-                disabled={!voiceText.trim()}
-                className="ml-3 p-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
-              >
-                <Send className="w-5 h-5" />
-              </button>
-            </div>
+            {/* Interim Transcript Display */}
+            {speechRecognition.interimTranscript && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 max-w-md">
+                <p className="text-sm text-blue-700 italic">"{speechRecognition.interimTranscript}"</p>
+              </div>
+            )}
+
+            {/* Error Display */}
+            {voiceFlowState.error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 max-w-md">
+                <p className="text-sm text-red-700">{voiceFlowState.error}</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Text Input */}
+        <div className="px-4 py-3 bg-white border-t border-gray-100">
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={toggleMicrophone}
+              disabled={voiceFlowState.isProcessing || voiceFlowState.isSpeaking}
+              className={`p-2 rounded-full transition-colors duration-200 ${
+                voiceFlowState.isListening
+                  ? 'bg-red-500 text-white'
+                  : voiceFlowState.isProcessing || voiceFlowState.isSpeaking
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-blue-500 text-white hover:bg-blue-600'
+              }`}
+            >
+              <Mic className="w-5 h-5" />
+            </button>
+            <input
+              type="text"
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              placeholder="Type your message or use voice..."
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleTextMessage(inputMessage);
+                }
+              }}
+            />
+            <button
+              onClick={() => handleTextMessage(inputMessage)}
+              disabled={!inputMessage.trim()}
+              className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors duration-200"
+            >
+              <Send className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
         {/* Mobile Navigation */}
-        <div className="bg-white border-t border-gray-200 px-6 py-4">
+        <div className="bg-white border-t border-gray-200 px-4 py-3">
           <div className="flex justify-around">
-            {[
-              { icon: Home, label: 'Dashboard', screen: 'dashboard' as const },
-              { icon: Mic, label: 'Voice Assistant', screen: 'voiceflow' as const },
-              { icon: Calendar, label: 'Calendar', screen: 'calendar' as const },
-              { icon: Settings, label: 'Settings', screen: 'settings' as const }
-            ].map((item, index) => (
-              <button
-                key={index}
-                onClick={() => setCurrentScreen(item.screen)}
-                className={`flex flex-col items-center space-y-1 p-2 rounded-lg transition-colors ${
-                  currentScreen === item.screen
-                    ? 'text-blue-600 bg-blue-50'
-                    : 'text-gray-600 hover:text-blue-600 hover:bg-gray-50'
-                }`}
-              >
-                <item.icon className="w-6 h-6" />
-                <span className="text-xs font-medium">{item.label}</span>
-              </button>
-            ))}
+            <button
+              onClick={() => setCurrentScreen('dashboard')}
+              className="flex flex-col items-center space-y-1 p-2 text-gray-600 hover:text-blue-600 transition-colors duration-200"
+            >
+              <Home className="w-5 h-5" />
+              <span className="text-xs">Dashboard</span>
+            </button>
+            <button className="flex flex-col items-center space-y-1 p-2 text-blue-600">
+              <Mic className="w-5 h-5" />
+              <span className="text-xs">Voice Assistant</span>
+            </button>
+            <button className="flex flex-col items-center space-y-1 p-2 text-gray-600 hover:text-blue-600 transition-colors duration-200">
+              <Calendar className="w-5 h-5" />
+              <span className="text-xs">Calendar</span>
+            </button>
+            <button className="flex flex-col items-center space-y-1 p-2 text-gray-600 hover:text-blue-600 transition-colors duration-200">
+              <Settings className="w-5 h-5" />
+              <span className="text-xs">Settings</span>
+            </button>
           </div>
         </div>
       </div>
     );
+  };
+
+  if (currentScreen === 'voiceflow') {
+    return <VoiceFlowAssistant />;
   }
 
   return (
