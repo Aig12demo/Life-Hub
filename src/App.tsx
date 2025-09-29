@@ -1,132 +1,252 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Brain, Mail, Lock, Eye, EyeOff, User, ArrowRight, ArrowLeft, CheckCircle, Calendar, Clock, Lightbulb, StickyNote, TrendingUp, Activity, Bell, Plus, Mic, MessageCircle, Send, Volume2, Home, MessageSquare, Zap, Check, ChevronLeft, ChevronRight, FileText, Settings, MicOff, Square, Play, Pause } from 'lucide-react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import { 
+  Mic, 
+  MicOff, 
+  Send, 
+  Square, 
+  User, 
+  Bot, 
+  Volume2, 
+  VolumeX,
+  Loader2,
+  LogOut,
+  Eye,
+  EyeOff,
+  UserPlus,
+  LogIn,
+  Brain,
+  Calendar,
+  CheckSquare,
+  MessageCircle,
+  Zap
+} from 'lucide-react';
+import { useAuth } from './hooks/useAuth';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
-import { Message, VoiceFlowState } from './types/voiceflow';
+import { authHelpers } from './lib/supabase';
+import { Message, VoiceFlowState, ProcessVoiceCommandResponse } from './types/voiceflow';
 
-type Screen = 'welcome' | 'login' | 'signup' | 'onboarding' | 'dashboard' | 'voiceflow' | 'calendar' | 'settings';
-
-function App() {
-  const [currentScreen, setCurrentScreen] = useState<Screen>('welcome');
-  const [isLoaded, setIsLoaded] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [currentFeature, setCurrentFeature] = useState(0);
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [isListening, setIsListening] = useState(false);
-  const [voiceText, setVoiceText] = useState('');
-  const [conversationHistory, setConversationHistory] = useState<Array<{type: 'user' | 'assistant', text: string, timestamp: Date}>>([]);
-  const [formData, setFormData] = useState({
+const App: React.FC = () => {
+  const { user, loading: authLoading } = useAuth();
+  
+  // Navigation state
+  const [currentView, setCurrentView] = useState<'welcome' | 'login' | 'signup' | 'dashboard' | 'voice'>('welcome');
+  
+  // Auth form states - using separate state objects to prevent re-renders
+  const [loginForm, setLoginForm] = useState({
     email: '',
     password: '',
-    fullName: '',
-    confirmPassword: ''
+    showPassword: false,
+    loading: false,
+    error: ''
   });
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  
+  const [signupForm, setSignupForm] = useState({
+    email: '',
+    password: '',
+    confirmPassword: '',
+    showPassword: false,
+    showConfirmPassword: false,
+    loading: false,
+    error: ''
+  });
+
+  // Voice assistant states
   const [messages, setMessages] = useState<Message[]>([]);
-  const [inputMessage, setInputMessage] = useState('');
+  const [textInput, setTextInput] = useState('');
   const [voiceFlowState, setVoiceFlowState] = useState<VoiceFlowState>({
     isListening: false,
     isProcessing: false,
     isSpeaking: false,
     error: null,
   });
-  
+
+  // Hooks
+  const {
+    isListening,
+    transcript,
+    interimTranscript,
+    error: speechError,
+    isSupported: speechSupported,
+    startListening,
+    stopListening,
+    resetTranscript,
+  } = useSpeechRecognition();
+
+  const {
+    speak,
+    stop: stopSpeaking,
+    isSpeaking,
+    isSupported: ttsSupported,
+  } = useSpeechSynthesis();
+
+  // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const processingTimeoutRef = useRef<NodeJS.Timeout>();
-  
-  // Speech recognition and synthesis hooks
-  const speechRecognition = useSpeechRecognition();
-  const speechSynthesis = useSpeechSynthesis();
-
-  const features = [
-    {
-      icon: Calendar,
-      title: "CalendarFuse 360™",
-      description: "Seamlessly integrate all your calendars into one unified view. Never miss an important event or double-book again.",
-      color: "from-blue-500 to-blue-600"
-    },
-    {
-      icon: MessageSquare,
-      title: "VoiceFlow Assistant™",
-      description: "Your intelligent voice companion that understands context and helps you manage tasks through natural conversation.",
-      color: "from-teal-500 to-teal-600"
-    },
-    {
-      icon: Zap,
-      title: "Smart Prioritize™",
-      description: "AI-powered task prioritization that learns your patterns and automatically organizes your day for maximum productivity.",
-      color: "from-blue-600 to-teal-500"
-    },
-    {
-      icon: Brain,
-      title: "Unified Life Hub™",
-      description: "Your central command center that connects all aspects of your digital life into one intelligent, cohesive experience.",
-      color: "from-teal-600 to-blue-600"
-    }
-  ];
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsLoaded(true);
-    }, 100);
-    return () => clearTimeout(timer);
-  }, []);
+  const textInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll to latest message
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, scrollToBottom]);
 
-  // Handle speech recognition results
+  // Update voice flow state based on hooks
   useEffect(() => {
-    if (speechRecognition.transcript && !voiceFlowState.isProcessing) {
-      handleVoiceMessage(speechRecognition.transcript);
-      speechRecognition.resetTranscript();
+    setVoiceFlowState(prev => ({
+      ...prev,
+      isListening,
+      isSpeaking,
+      error: speechError,
+    }));
+  }, [isListening, isSpeaking, speechError]);
+
+  // Handle completed speech recognition
+  useEffect(() => {
+    if (transcript && !isListening) {
+      handleVoiceCommand(transcript);
+      resetTranscript();
     }
-  }, [speechRecognition.transcript]);
+  }, [transcript, isListening]);
 
-  // Update voice flow state based on speech recognition
-  useEffect(() => {
-    setVoiceFlowState(prev => ({
-      ...prev,
-      isListening: speechRecognition.isListening,
-      error: speechRecognition.error,
-    }));
-  }, [speechRecognition.isListening, speechRecognition.error]);
+  // Memoized handlers to prevent re-renders
+  const handleLoginEmailChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setLoginForm(prev => ({ ...prev, email: e.target.value, error: '' }));
+  }, []);
 
-  // Update voice flow state based on speech synthesis
-  useEffect(() => {
-    setVoiceFlowState(prev => ({
-      ...prev,
-      isSpeaking: speechSynthesis.isSpeaking,
-    }));
-  }, [speechSynthesis.isSpeaking]);
+  const handleLoginPasswordChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setLoginForm(prev => ({ ...prev, password: e.target.value, error: '' }));
+  }, []);
 
-  // Process voice command via Supabase Edge Function
-  const processVoiceCommand = async (message: string): Promise<string> => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  const handleSignupEmailChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setSignupForm(prev => ({ ...prev, email: e.target.value, error: '' }));
+  }, []);
+
+  const handleSignupPasswordChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setSignupForm(prev => ({ ...prev, password: e.target.value, error: '' }));
+  }, []);
+
+  const handleSignupConfirmPasswordChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setSignupForm(prev => ({ ...prev, confirmPassword: e.target.value, error: '' }));
+  }, []);
+
+  const handleTextInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setTextInput(e.target.value);
+  }, []);
+
+  const toggleLoginPasswordVisibility = useCallback(() => {
+    setLoginForm(prev => ({ ...prev, showPassword: !prev.showPassword }));
+  }, []);
+
+  const toggleSignupPasswordVisibility = useCallback(() => {
+    setSignupForm(prev => ({ ...prev, showPassword: !prev.showPassword }));
+  }, []);
+
+  const toggleSignupConfirmPasswordVisibility = useCallback(() => {
+    setSignupForm(prev => ({ ...prev, showConfirmPassword: !prev.showConfirmPassword }));
+  }, []);
+
+  // Auth handlers
+  const handleLogin = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
     
-    if (!supabaseUrl || !supabaseAnonKey) {
-      throw new Error('Supabase configuration missing. Please set up your Supabase project.');
+    if (!loginForm.email || !loginForm.password) {
+      setLoginForm(prev => ({ ...prev, error: 'Please fill in all fields' }));
+      return;
     }
+
+    setLoginForm(prev => ({ ...prev, loading: true, error: '' }));
+
+    try {
+      const { error } = await authHelpers.signIn(loginForm.email, loginForm.password);
+      
+      if (error) {
+        setLoginForm(prev => ({ ...prev, error: error.message, loading: false }));
+      } else {
+        setCurrentView('dashboard');
+        setLoginForm({ email: '', password: '', showPassword: false, loading: false, error: '' });
+      }
+    } catch (err) {
+      setLoginForm(prev => ({ 
+        ...prev, 
+        error: 'An unexpected error occurred', 
+        loading: false 
+      }));
+    }
+  }, [loginForm.email, loginForm.password]);
+
+  const handleSignup = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!signupForm.email || !signupForm.password || !signupForm.confirmPassword) {
+      setSignupForm(prev => ({ ...prev, error: 'Please fill in all fields' }));
+      return;
+    }
+
+    if (signupForm.password !== signupForm.confirmPassword) {
+      setSignupForm(prev => ({ ...prev, error: 'Passwords do not match' }));
+      return;
+    }
+
+    if (signupForm.password.length < 6) {
+      setSignupForm(prev => ({ ...prev, error: 'Password must be at least 6 characters' }));
+      return;
+    }
+
+    setSignupForm(prev => ({ ...prev, loading: true, error: '' }));
+
+    try {
+      const { error } = await authHelpers.signUp(signupForm.email, signupForm.password);
+      
+      if (error) {
+        setSignupForm(prev => ({ ...prev, error: error.message, loading: false }));
+      } else {
+        setCurrentView('login');
+        setSignupForm({ 
+          email: '', 
+          password: '', 
+          confirmPassword: '', 
+          showPassword: false, 
+          showConfirmPassword: false, 
+          loading: false, 
+          error: '' 
+        });
+      }
+    } catch (err) {
+      setSignupForm(prev => ({ 
+        ...prev, 
+        error: 'An unexpected error occurred', 
+        loading: false 
+      }));
+    }
+  }, [signupForm.email, signupForm.password, signupForm.confirmPassword]);
+
+  const handleSignOut = useCallback(async () => {
+    await authHelpers.signOut();
+    setCurrentView('welcome');
+    setMessages([]);
+    setTextInput('');
+  }, []);
+
+  // Voice command processing
+  const processVoiceCommand = useCallback(async (message: string): Promise<string> => {
+    const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-voice-command`;
+    
+    const headers = {
+      'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json',
+    };
 
     const conversationHistory = messages.slice(-10).map(msg => ({
       role: msg.type === 'user' ? 'user' as const : 'assistant' as const,
       content: msg.content,
     }));
 
-    const response = await fetch(`${supabaseUrl}/functions/v1/process-voice-command`, {
+    const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${supabaseAnonKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         message,
         conversationHistory,
@@ -137,24 +257,22 @@ function App() {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const data = await response.json();
+    const data: ProcessVoiceCommandResponse = await response.json();
     
     if (!data.success) {
       throw new Error(data.error || 'Failed to process voice command');
     }
 
-    return data.response;
-  };
+    return data.response || 'I apologize, but I couldn\'t generate a response.';
+  }, [messages]);
 
-  // Handle voice message processing
-  const handleVoiceMessage = async (transcript: string) => {
-    if (!transcript.trim()) return;
+  const handleVoiceCommand = useCallback(async (message: string) => {
+    if (!message.trim()) return;
 
-    // Add user message
     const userMessage: Message = {
       id: Date.now().toString(),
       type: 'user',
-      content: transcript,
+      content: message,
       timestamp: new Date(),
       isVoice: true,
     };
@@ -163,1423 +281,664 @@ function App() {
     setVoiceFlowState(prev => ({ ...prev, isProcessing: true, error: null }));
 
     try {
-      // Process the command
-      const response = await processVoiceCommand(transcript);
-
-      // Add assistant response
+      const response = await processVoiceCommand(message);
+      
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
         content: response,
         timestamp: new Date(),
-        isVoice: true,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
-
-      // Speak the response
-      speechSynthesis.speak(response);
-
-    } catch (error) {
-      console.error('Voice command processing error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
       
+      if (ttsSupported) {
+        speak(response);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       setVoiceFlowState(prev => ({ ...prev, error: errorMessage }));
       
-      // Add error message to chat
       const errorResponse: Message = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
-        content: `I'm sorry, I encountered an error: ${errorMessage}`,
+        content: `I apologize, but I encountered an error: ${errorMessage}`,
         timestamp: new Date(),
       };
-      
+
       setMessages(prev => [...prev, errorResponse]);
     } finally {
       setVoiceFlowState(prev => ({ ...prev, isProcessing: false }));
     }
-  };
+  }, [processVoiceCommand, speak, ttsSupported]);
 
-  // Handle text message
-  const handleTextMessage = async (message: string) => {
-    if (!message.trim()) return;
-
-    setInputMessage('');
-    await handleVoiceMessage(message);
-  };
-
-  // Toggle microphone
-  const toggleMicrophone = () => {
-    if (voiceFlowState.isListening) {
-      speechRecognition.stopListening();
-    } else {
-      if (!speechRecognition.isSupported) {
-        setVoiceFlowState(prev => ({ 
-          ...prev, 
-          error: 'Speech recognition is not supported in your browser' 
-        }));
-        return;
-      }
-      speechRecognition.startListening();
-    }
-  };
-
-  // Stop all speech
-  const stopSpeech = () => {
-    speechSynthesis.stop();
-    speechRecognition.stopListening();
-  };
-
-  // Clear conversation
-  const clearConversation = () => {
-    setMessages([]);
-    speechSynthesis.stop();
-    speechRecognition.resetTranscript();
-    setVoiceFlowState({
-      isListening: false,
-      isProcessing: false,
-      isSpeaking: false,
-      error: null,
-    });
-  };
-
-  // Get current status text
-  const getStatusText = () => {
-    if (voiceFlowState.error) return voiceFlowState.error;
-    if (voiceFlowState.isProcessing) return 'Processing...';
-    if (voiceFlowState.isSpeaking) return 'Speaking...';
-    if (voiceFlowState.isListening) return 'Listening...';
-    if (speechRecognition.interimTranscript) return `"${speechRecognition.interimTranscript}"`;
-    return 'Ready to Assist';
-  };
-
-  // Get status color
-  const getStatusColor = () => {
-    if (voiceFlowState.error) return 'text-red-500';
-    if (voiceFlowState.isProcessing) return 'text-yellow-500';
-    if (voiceFlowState.isSpeaking) return 'text-green-500';
-    if (voiceFlowState.isListening) return 'text-red-500';
-    return 'text-gray-600';
-  };
-
-  const handleInputChange = (field: string, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-    if (errors[field]) {
-      setErrors(prev => ({ ...prev, [field]: '' }));
-    }
-  };
-
-  const validateEmail = (email: string) => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-  };
-
-  const validateSignUp = () => {
-    const newErrors: Record<string, string> = {};
-    
-    if (!formData.fullName.trim()) {
-      newErrors.fullName = 'Full name is required';
-    }
-    
-    if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
-    } else if (!validateEmail(formData.email)) {
-      newErrors.email = 'Please enter a valid email';
-    }
-    
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 8) {
-      newErrors.password = 'Password must be at least 8 characters';
-    }
-    
-    if (formData.password !== formData.confirmPassword) {
-      newErrors.confirmPassword = 'Passwords do not match';
-    }
-    
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const validateLogin = () => {
-    const newErrors: Record<string, string> = {};
-    
-    if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
-    } else if (!validateEmail(formData.email)) {
-      newErrors.email = 'Please enter a valid email';
-    }
-    
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    }
-    
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleTextSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (currentScreen === 'login') {
-      if (validateLogin()) {
-        console.log('Login submitted:', { email: formData.email, password: formData.password });
-        // Navigate to onboarding after successful login
-        navigateToScreen('onboarding');
-      }
-    } else if (currentScreen === 'signup') {
-      if (validateSignUp()) {
-        console.log('Sign up submitted:', formData);
-        // Navigate to onboarding after successful signup
-        navigateToScreen('onboarding');
-      }
-    }
-  };
+    if (!textInput.trim()) return;
 
-  const navigateToScreen = (screen: Screen) => {
-    setCurrentScreen(screen);
-    setIsLoaded(false);
-    setErrors({});
-    setCurrentFeature(0);
-    setTimeout(() => setIsLoaded(true), 100);
-  };
+    await handleVoiceCommand(textInput);
+    setTextInput('');
+  }, [textInput, handleVoiceCommand]);
 
-  const nextFeature = () => {
-    if (currentFeature < features.length - 1) {
-      setCurrentFeature(currentFeature + 1);
+  const handleMicToggle = useCallback(() => {
+    if (isListening) {
+      stopListening();
     } else {
-      // Navigate to dashboard after onboarding completion
-      navigateToScreen('dashboard');
+      startListening();
     }
-  };
+  }, [isListening, startListening, stopListening]);
 
-  const prevFeature = () => {
-    if (currentFeature > 0) {
-      setCurrentFeature(currentFeature - 1);
-    }
-  };
+  const handleStopSpeaking = useCallback(() => {
+    stopSpeaking();
+  }, [stopSpeaking]);
 
-  const goToFeature = (index: number) => {
-    setCurrentFeature(index);
-  };
+  const clearConversation = useCallback(() => {
+    setMessages([]);
+    setTextInput('');
+    resetTranscript();
+    stopSpeaking();
+  }, [resetTranscript, stopSpeaking]);
 
-  const handleVoiceToggle = () => {
-    setIsListening(!isListening);
-    if (!isListening) {
-      // Simulate voice recognition
-      setTimeout(() => {
-        setVoiceText("How can I help you today?");
-        setIsListening(false);
-      }, 2000);
-    }
-  };
+  // Navigation handlers
+  const navigateToLogin = useCallback(() => setCurrentView('login'), []);
+  const navigateToSignup = useCallback(() => setCurrentView('signup'), []);
+  const navigateToDashboard = useCallback(() => setCurrentView('dashboard'), []);
+  const navigateToVoice = useCallback(() => setCurrentView('voice'), []);
+  const navigateToWelcome = useCallback(() => setCurrentView('welcome'), []);
 
-  const handleSendMessage = (message: string) => {
-    if (message.trim()) {
-      const newMessage = { type: 'user' as const, text: message, timestamp: new Date() };
-      setConversationHistory(prev => [...prev, newMessage]);
-      
-      // Simulate AI response
-      setTimeout(() => {
-        const responses = [
-          "I'd be happy to help you with that. Let me check your calendar and tasks.",
-          "Based on your schedule, I recommend focusing on your high-priority tasks first.",
-          "I've found some relevant information for you. Would you like me to create a reminder?",
-          "Your next meeting is in 30 minutes. Should I prepare a summary of the agenda?"
-        ];
-        const response = responses[Math.floor(Math.random() * responses.length)];
-        const aiMessage = { type: 'assistant' as const, text: response, timestamp: new Date() };
-        setConversationHistory(prev => [...prev, aiMessage]);
-      }, 1000);
-      
-      setVoiceText('');
-    }
-  };
-
-  const DashboardScreen = () => {
-    const todaysTasks = [
-      { id: 1, title: "Review quarterly reports", completed: false, priority: "high" },
-      { id: 2, title: "Team standup meeting", completed: true, priority: "medium" },
-      { id: 3, title: "Update project timeline", completed: false, priority: "high" },
-      { id: 4, title: "Call with client", completed: false, priority: "low" },
-      { id: 5, title: "Prepare presentation slides", completed: true, priority: "medium" }
-    ];
-
-    const upcomingEvents = [
-      { id: 1, title: "Product Strategy Meeting", time: "2:00 PM", type: "meeting" },
-      { id: 2, title: "Doctor Appointment", time: "4:30 PM", type: "personal" },
-      { id: 3, title: "Dinner with Sarah", time: "7:00 PM", type: "social" }
-    ];
-
-    const proactiveSuggestions = [
-      { id: 1, title: "Schedule focus time", description: "You have 2 hours free this afternoon - perfect for deep work on your presentation." },
-      { id: 2, title: "Prepare for tomorrow", description: "Tomorrow's client meeting could benefit from reviewing last quarter's metrics." },
-      { id: 3, title: "Take a break", description: "You've been productive today! Consider a 15-minute walk to recharge." }
-    ];
-
-    const completedTasks = todaysTasks.filter(task => task.completed).length;
-    const totalTasks = todaysTasks.length;
-    const progressPercentage = (completedTasks / totalTasks) * 100;
-
+  // Loading screen
+  if (authLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/20 to-teal-50/10">
-        {/* Header */}
-        <div 
-          className={`bg-white/80 backdrop-blur-sm border-b border-slate-200/50 px-6 py-4 transition-all duration-1000 ease-out ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-light text-slate-800">Your Unified Hub</h1>
-              <p className="text-sm text-slate-600 mt-1">Welcome back! Here's your day at a glance.</p>
-            </div>
-            <div className="flex items-center space-x-3">
-              <button className="p-2 text-slate-600 hover:text-blue-600 transition-colors duration-300">
-                <Bell className="w-5 h-5" />
-              </button>
-              <div className="w-8 h-8 bg-gradient-to-br from-blue-600 to-teal-600 rounded-full flex items-center justify-center">
-                <span className="text-white text-sm font-medium">JD</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Main Content */}
-        <div className="px-6 py-6 pb-24">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {/* Today's Tasks Card */}
-            <div 
-              className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-lg p-6 transition-all duration-1000 ease-out delay-200 ${
-                isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center">
-                  <div className="bg-blue-100 p-2 rounded-xl mr-3">
-                    <CheckCircle className="w-5 h-5 text-blue-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-800">Today's Tasks</h3>
-                </div>
-                <span className="text-sm text-slate-500">{completedTasks}/{totalTasks}</span>
-              </div>
-              
-              {/* Progress Bar */}
-              <div className="mb-4">
-                <div className="w-full bg-slate-200 rounded-full h-2">
-                  <div 
-                    className="bg-gradient-to-r from-blue-500 to-blue-600 h-2 rounded-full transition-all duration-1000 ease-out"
-                    style={{ width: `${progressPercentage}%` }}
-                  />
-                </div>
-                <p className="text-xs text-slate-600 mt-2">{Math.round(progressPercentage)}% complete</p>
-              </div>
-
-              {/* Task List */}
-              <div className="space-y-3">
-                {todaysTasks.slice(0, 4).map((task) => (
-                  <div key={task.id} className="flex items-center space-x-3">
-                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                      task.completed 
-                        ? 'bg-blue-600 border-blue-600' 
-                        : 'border-slate-300 hover:border-blue-400'
-                    } transition-colors duration-300`}>
-                      {task.completed && <Check className="w-2.5 h-2.5 text-white" />}
-                    </div>
-                    <span className={`text-sm flex-1 ${
-                      task.completed ? 'text-slate-500 line-through' : 'text-slate-700'
-                    }`}>
-                      {task.title}
-                    </span>
-                    <div className={`w-2 h-2 rounded-full ${
-                      task.priority === 'high' ? 'bg-red-400' :
-                      task.priority === 'medium' ? 'bg-yellow-400' : 'bg-green-400'
-                    }`} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Upcoming Events Card */}
-            <div 
-              className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-lg p-6 transition-all duration-1000 ease-out delay-300 ${
-                isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-              }`}
-            >
-              <div className="flex items-center mb-4">
-                <div className="bg-teal-100 p-2 rounded-xl mr-3">
-                  <Calendar className="w-5 h-5 text-teal-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-800">Upcoming Events</h3>
-              </div>
-              
-              <div className="space-y-4">
-                {upcomingEvents.map((event) => (
-                  <div key={event.id} className="flex items-center space-x-3">
-                    <div className="flex-shrink-0">
-                      <div className={`w-3 h-3 rounded-full ${
-                        event.type === 'meeting' ? 'bg-blue-500' :
-                        event.type === 'personal' ? 'bg-teal-500' : 'bg-purple-500'
-                      }`} />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-slate-800">{event.title}</p>
-                      <p className="text-xs text-slate-600">{event.time}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              
-              <button className="w-full mt-4 py-2 text-sm text-teal-600 hover:text-teal-700 font-medium transition-colors duration-300">
-                View Full Calendar
-              </button>
-            </div>
-
-            {/* Proactive Suggestions Card */}
-            <div 
-              className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-lg p-6 transition-all duration-1000 ease-out delay-400 ${
-                isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-              }`}
-            >
-              <div className="flex items-center mb-4">
-                <div className="bg-yellow-100 p-2 rounded-xl mr-3">
-                  <Lightbulb className="w-5 h-5 text-yellow-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-800">Smart Suggestions</h3>
-              </div>
-              
-              <div className="space-y-4">
-                {proactiveSuggestions.slice(0, 2).map((suggestion) => (
-                  <div key={suggestion.id} className="p-3 bg-gradient-to-r from-blue-50 to-teal-50 rounded-xl">
-                    <p className="text-sm font-medium text-slate-800 mb-1">{suggestion.title}</p>
-                    <p className="text-xs text-slate-600">{suggestion.description}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Quick Notes Card */}
-            <div 
-              className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-lg p-6 transition-all duration-1000 ease-out delay-500 ${
-                isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-              }`}
-            >
-              <div className="flex items-center mb-4">
-                <div className="bg-purple-100 p-2 rounded-xl mr-3">
-                  <FileText className="w-5 h-5 text-purple-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-800">Quick Notes</h3>
-              </div>
-              
-              <div className="space-y-3">
-                <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-sm text-slate-700">Remember to follow up with the design team about the new mockups</p>
-                  <p className="text-xs text-slate-500 mt-1">2 hours ago</p>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-xl">
-                  <p className="text-sm text-slate-700">Ideas for weekend project: AI-powered recipe suggestions</p>
-                  <p className="text-xs text-slate-500 mt-1">Yesterday</p>
-                </div>
-              </div>
-              
-              <button className="w-full mt-4 py-2 text-sm text-purple-600 hover:text-purple-700 font-medium transition-colors duration-300">
-                Add New Note
-              </button>
-            </div>
-
-            {/* Productivity Insights Card */}
-            <div 
-              className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-lg p-6 transition-all duration-1000 ease-out delay-600 ${
-                isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-              }`}
-            >
-              <div className="flex items-center mb-4">
-                <div className="bg-green-100 p-2 rounded-xl mr-3">
-                  <TrendingUp className="w-5 h-5 text-green-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-800">Productivity</h3>
-              </div>
-              
-              <div className="space-y-4">
-                <div className="text-center">
-                  <div className="text-3xl font-light text-slate-800 mb-1">87%</div>
-                  <p className="text-sm text-slate-600">Weekly completion rate</p>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-600">Focus time today</span>
-                  <span className="font-medium text-slate-800">4h 32m</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-slate-600">Tasks completed</span>
-                  <span className="font-medium text-slate-800">12/15</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Recent Activity Card */}
-            <div 
-              className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-lg p-6 transition-all duration-1000 ease-out delay-700 ${
-                isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-              }`}
-            >
-              <div className="flex items-center mb-4">
-                <div className="bg-indigo-100 p-2 rounded-xl mr-3">
-                  <Clock className="w-5 h-5 text-indigo-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-slate-800">Recent Activity</h3>
-              </div>
-              
-              <div className="space-y-3">
-                <div className="flex items-center space-x-3">
-                  <div className="w-2 h-2 bg-green-500 rounded-full" />
-                  <div className="flex-1">
-                    <p className="text-sm text-slate-700">Completed "Team standup meeting"</p>
-                    <p className="text-xs text-slate-500">30 minutes ago</p>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <div className="w-2 h-2 bg-blue-500 rounded-full" />
-                  <div className="flex-1">
-                    <p className="text-sm text-slate-700">Added new task "Update project timeline"</p>
-                    <p className="text-xs text-slate-500">1 hour ago</p>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <div className="w-2 h-2 bg-purple-500 rounded-full" />
-                  <div className="flex-1">
-                    <p className="text-sm text-slate-700">Created note about design feedback</p>
-                    <p className="text-xs text-slate-500">2 hours ago</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Floating Action Button */}
-        <button 
-          className={`fixed bottom-20 right-6 bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-700 hover:to-teal-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 ${
-            isLoaded ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
-          }`}
-          style={{ transitionDelay: '800ms' }}
-        >
-          <Plus className="w-6 h-6" />
-        </button>
-
-        {/* Mobile Navigation */}
-        <div 
-          className={`fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-sm border-t border-slate-200/50 px-6 py-3 transition-all duration-1000 ease-out ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-          style={{ transitionDelay: '900ms' }}
-        >
-          <div className="flex items-center justify-around">
-            <button 
-              onClick={() => setActiveTab('dashboard')}
-              className={`flex flex-col items-center py-2 px-3 rounded-xl transition-all duration-300 ${
-                activeTab === 'dashboard' 
-                  ? 'bg-blue-100 text-blue-600' 
-                  : 'text-slate-600 hover:text-blue-600'
-              }`}
-            >
-              <Home className="w-5 h-5 mb-1" />
-              <span className="text-xs font-medium">Dashboard</span>
-            </button>
-            <button 
-              onClick={() => setActiveTab('voice')}
-              className={`flex flex-col items-center py-2 px-3 rounded-xl transition-all duration-300 ${
-                activeTab === 'voice' 
-                  ? 'bg-blue-100 text-blue-600' 
-                  : 'text-slate-600 hover:text-blue-600'
-              }`}
-            >
-              <Mic className="w-5 h-5 mb-1" />
-              <span className="text-xs font-medium">Voice Assistant</span>
-            </button>
-            <button 
-              onClick={() => setActiveTab('calendar')}
-              className={`flex flex-col items-center py-2 px-3 rounded-xl transition-all duration-300 ${
-                activeTab === 'calendar' 
-                  ? 'bg-blue-100 text-blue-600' 
-                  : 'text-slate-600 hover:text-blue-600'
-              }`}
-            >
-              <Calendar className="w-5 h-5 mb-1" />
-              <span className="text-xs font-medium">Calendar</span>
-            </button>
-            <button 
-              onClick={() => setActiveTab('settings')}
-              className={`flex flex-col items-center py-2 px-3 rounded-xl transition-all duration-300 ${
-                activeTab === 'settings' 
-                  ? 'bg-blue-100 text-blue-600' 
-                  : 'text-slate-600 hover:text-blue-600'
-              }`}
-            >
-              <Settings className="w-5 h-5 mb-1" />
-              <span className="text-xs font-medium">Settings</span>
-            </button>
-          </div>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading...</p>
         </div>
       </div>
     );
-  };
-  const WelcomeScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-teal-50/20 overflow-hidden">
-      {/* Background Abstract Shapes */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute top-20 left-10 w-32 h-32 bg-gradient-to-br from-blue-200/20 to-teal-200/20 rounded-full blur-xl animate-pulse"></div>
-        <div className="absolute bottom-20 right-10 w-40 h-40 bg-gradient-to-tl from-teal-200/20 to-blue-200/20 rounded-full blur-xl animate-pulse delay-1000"></div>
-        <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-60 h-60 bg-gradient-to-r from-blue-100/10 to-teal-100/10 rounded-full blur-2xl animate-pulse delay-500"></div>
-      </div>
-
-      {/* Main Content */}
-      <div className="relative z-10 min-h-screen flex flex-col items-center justify-center px-6 py-12">
-        {/* Logo Section */}
-        <div 
-          className={`mb-8 transition-all duration-1000 ease-out ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          <div className="relative flex items-center justify-center">
-            <div className="absolute inset-0 bg-gradient-to-r from-blue-500/20 to-teal-500/20 rounded-full blur-lg scale-150"></div>
-            <div className="relative bg-gradient-to-br from-blue-600 to-teal-600 p-6 rounded-3xl shadow-xl">
-              <Brain className="w-16 h-16 text-white" />
-            </div>
-          </div>
-        </div>
-
-        {/* Title Section */}
-        <div 
-          className={`text-center mb-6 transition-all duration-1000 ease-out delay-300 ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          <h1 className="text-5xl md:text-7xl font-light text-slate-800 mb-2 tracking-tight">
-            Welcome to{' '}
-            <span className="font-semibold bg-gradient-to-r from-blue-600 to-teal-600 bg-clip-text text-transparent">
-              Cortex
-            </span>
-            <sup className="text-lg text-slate-500 ml-1">™</sup>
-          </h1>
-        </div>
-
-        {/* Tagline */}
-        <div 
-          className={`text-center mb-12 transition-all duration-1000 ease-out delay-500 ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          <p className="text-xl md:text-2xl font-light text-slate-600 max-w-lg mx-auto leading-relaxed">
-            Your Life, Unified.{' '}
-            <br className="hidden sm:block" />
-            <span className="text-teal-600">Your Mind, Freed.</span>
-          </p>
-        </div>
-
-        {/* Abstract Illustration */}
-        <div 
-          className={`mb-16 transition-all duration-1000 ease-out delay-700 ${
-            isLoaded ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
-          }`}
-        >
-          <div className="relative w-72 h-56 md:w-96 md:h-72">
-            {/* Central Hub */}
-            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-20 h-20 bg-gradient-to-br from-blue-500 to-teal-500 rounded-full shadow-xl animate-pulse"></div>
-            
-            {/* Connecting Nodes */}
-            <div className="absolute top-6 left-12 w-10 h-10 bg-gradient-to-br from-blue-400 to-blue-500 rounded-full opacity-70 animate-pulse delay-200"></div>
-            <div className="absolute top-12 right-16 w-8 h-8 bg-gradient-to-br from-teal-400 to-teal-500 rounded-full opacity-60 animate-pulse delay-400"></div>
-            <div className="absolute bottom-12 left-16 w-12 h-12 bg-gradient-to-br from-blue-300 to-teal-400 rounded-full opacity-50 animate-pulse delay-600"></div>
-            <div className="absolute bottom-6 right-12 w-9 h-9 bg-gradient-to-br from-teal-300 to-blue-400 rounded-full opacity-65 animate-pulse delay-300"></div>
-            
-            {/* Connecting Lines */}
-            <svg className="absolute inset-0 w-full h-full" viewBox="0 0 384 288">
-              <defs>
-                <linearGradient id="line-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#3B82F6" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="#14B8A6" stopOpacity="0.4" />
-                </linearGradient>
-              </defs>
-              <path d="M 192 144 Q 80 80 68 56" stroke="url(#line-gradient)" strokeWidth="3" fill="none" className="animate-pulse delay-100" />
-              <path d="M 192 144 Q 304 100 320 84" stroke="url(#line-gradient)" strokeWidth="3" fill="none" className="animate-pulse delay-300" />
-              <path d="M 192 144 Q 100 200 84 204" stroke="url(#line-gradient)" strokeWidth="3" fill="none" className="animate-pulse delay-500" />
-              <path d="M 192 144 Q 284 188 300 200" stroke="url(#line-gradient)" strokeWidth="3" fill="none" className="animate-pulse delay-700" />
-            </svg>
-          </div>
-        </div>
-
-        {/* Call-to-Action Buttons */}
-        <div 
-          className={`flex flex-col items-center space-y-4 transition-all duration-1000 ease-out delay-1000 ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          <button 
-            onClick={() => navigateToScreen('signup')}
-            className="group relative overflow-hidden bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-700 hover:to-teal-700 text-white font-medium px-10 py-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1"
-          >
-            <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-            <span className="relative text-lg">Create Account</span>
-          </button>
-          
-          <button 
-            onClick={() => navigateToScreen('dashboard')}
-            className="text-slate-600 hover:text-blue-600 font-medium transition-colors duration-300 underline decoration-transparent hover:decoration-blue-600 underline-offset-4"
-          >
-            View Dashboard (Demo)
-          </button>
-          
-          <button 
-            onClick={() => navigateToScreen('voiceflow')}
-            className="text-teal-600 hover:text-teal-700 font-medium transition-colors duration-300"
-          >
-            Try Voice Assistant (Demo)
-          </button>
-        </div>
-
-        {/* Feature Hints */}
-        <div 
-          className={`mt-12 text-center transition-all duration-1000 ease-out delay-1200 ${
-            isLoaded ? 'opacity-100' : 'opacity-0'
-          }`}
-        >
-          <div className="flex flex-wrap justify-center gap-6 text-sm text-slate-500">
-            <span className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-              Unified Life Hub™
-            </span>
-            <span className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-teal-500 rounded-full animate-pulse delay-200"></div>
-              VoiceFlow Assistant™
-            </span>
-            <span className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse delay-400"></div>
-              CalendarFuse 360™
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const LoginScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/20 to-teal-50/10 flex items-center justify-center px-6 py-12">
-      <div className="w-full max-w-md">
-        {/* Back Button */}
-        <button 
-          onClick={() => navigateToScreen('welcome')}
-          className="mb-8 flex items-center text-slate-600 hover:text-blue-600 transition-colors duration-300"
-        >
-          <ArrowLeft className="w-5 h-5 mr-2" />
-          Back
-        </button>
-
-        {/* Login Card */}
-        <div 
-          className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 transition-all duration-1000 ease-out ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          {/* Logo */}
-          <div className="flex justify-center mb-8">
-            <div className="bg-gradient-to-br from-blue-600 to-teal-600 p-4 rounded-2xl shadow-lg">
-              <Brain className="w-10 h-10 text-white" />
-            </div>
-          </div>
-
-          {/* Title */}
-          <h2 className="text-3xl font-light text-slate-800 text-center mb-8">
-            Log In to Your Account
-          </h2>
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Email Field */}
-            <div>
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={formData.email}
-                  onChange={(e) => handleInputChange('email', e.target.value)}
-                  className={`w-full pl-12 pr-4 py-4 bg-slate-50 border-2 rounded-xl focus:outline-none transition-colors duration-300 ${
-                    errors.email 
-                      ? 'border-red-300 focus:border-red-500' 
-                      : 'border-transparent focus:border-blue-500'
-                  }`}
-                />
-              </div>
-              {errors.email && <p className="mt-2 text-sm text-red-600">{errors.email}</p>}
-            </div>
-
-            {/* Password Field */}
-            <div>
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Password"
-                  value={formData.password}
-                  onChange={(e) => handleInputChange('password', e.target.value)}
-                  className={`w-full pl-12 pr-12 py-4 bg-slate-50 border-2 rounded-xl focus:outline-none transition-colors duration-300 ${
-                    errors.password 
-                      ? 'border-red-300 focus:border-red-500' 
-                      : 'border-transparent focus:border-blue-500'
-                  }`}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-              {errors.password && <p className="mt-2 text-sm text-red-600">{errors.password}</p>}
-            </div>
-
-            {/* Forgot Password */}
-            <div className="text-right">
-              <button type="button" className="text-sm text-blue-600 hover:text-blue-700 transition-colors duration-300">
-                Forgot Password?
-              </button>
-            </div>
-
-            {/* Login Button */}
-            <button
-              type="submit"
-              className="w-full bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-700 hover:to-teal-700 text-white font-medium py-4 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-0.5"
-            >
-              Log In
-            </button>
-          </form>
-
-          {/* Divider */}
-          <div className="my-8 flex items-center">
-            <div className="flex-1 border-t border-slate-200"></div>
-            <span className="px-4 text-sm text-slate-500">or continue with</span>
-            <div className="flex-1 border-t border-slate-200"></div>
-          </div>
-
-          {/* Social Login */}
-          <div className="space-y-3">
-            <button className="w-full flex items-center justify-center py-3 px-4 border-2 border-slate-200 rounded-xl hover:border-slate-300 transition-colors duration-300">
-              <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-              </svg>
-              Continue with Google
-            </button>
-            <button className="w-full flex items-center justify-center py-3 px-4 border-2 border-slate-200 rounded-xl hover:border-slate-300 transition-colors duration-300">
-              <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12.017 0C5.396 0 .029 5.367.029 11.987c0 5.079 3.158 9.417 7.618 11.024-.105-.949-.199-2.403.041-3.439.219-.937 1.406-5.957 1.406-5.957s-.359-.72-.359-1.781c0-1.663.967-2.911 2.168-2.911 1.024 0 1.518.769 1.518 1.688 0 1.029-.653 2.567-.992 3.992-.285 1.193.6 2.165 1.775 2.165 2.128 0 3.768-2.245 3.768-5.487 0-2.861-2.063-4.869-5.008-4.869-3.41 0-5.409 2.562-5.409 5.199 0 1.033.394 2.143.889 2.741.097.118.112.221.085.345-.09.375-.293 1.199-.334 1.363-.053.225-.172.271-.402.165-1.495-.69-2.433-2.878-2.433-4.646 0-3.776 2.748-7.252 7.92-7.252 4.158 0 7.392 2.967 7.392 6.923 0 4.135-2.607 7.462-6.233 7.462-1.214 0-2.357-.629-2.75-1.378l-.748 2.853c-.271 1.043-1.002 2.35-1.492 3.146C9.57 23.812 10.763 24.009 12.017 24.009c6.624 0 11.99-5.367 11.99-11.988C24.007 5.367 18.641.001.012.001z"/>
-              </svg>
-              Continue with Apple
-            </button>
-          </div>
-
-          {/* Sign Up Link */}
-          <div className="mt-8 text-center">
-            <span className="text-slate-600">Don't have an account? </span>
-            <button 
-              onClick={() => navigateToScreen('signup')}
-              className="text-blue-600 hover:text-blue-700 font-medium transition-colors duration-300"
-            >
-              Sign Up
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const SignUpScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/20 to-teal-50/10 flex items-center justify-center px-6 py-12">
-      <div className="w-full max-w-md">
-        {/* Back Button */}
-        <button 
-          onClick={() => navigateToScreen('welcome')}
-          className="mb-8 flex items-center text-slate-600 hover:text-blue-600 transition-colors duration-300"
-        >
-          <ArrowLeft className="w-5 h-5 mr-2" />
-          Back
-        </button>
-
-        {/* Sign Up Card */}
-        <div 
-          className={`bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 transition-all duration-1000 ease-out ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          {/* Logo */}
-          <div className="flex justify-center mb-8">
-            <div className="bg-gradient-to-br from-blue-600 to-teal-600 p-4 rounded-2xl shadow-lg">
-              <Brain className="w-10 h-10 text-white" />
-            </div>
-          </div>
-
-          {/* Title */}
-          <h2 className="text-3xl font-light text-slate-800 text-center mb-8">
-            Create Your Account
-          </h2>
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Full Name Field */}
-            <div>
-              <div className="relative">
-                <User className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Full Name"
-                  value={formData.fullName}
-                  onChange={(e) => handleInputChange('fullName', e.target.value)}
-                  className={`w-full pl-12 pr-4 py-4 bg-slate-50 border-2 rounded-xl focus:outline-none transition-colors duration-300 ${
-                    errors.fullName 
-                      ? 'border-red-300 focus:border-red-500' 
-                      : 'border-transparent focus:border-blue-500'
-                  }`}
-                />
-              </div>
-              {errors.fullName && <p className="mt-2 text-sm text-red-600">{errors.fullName}</p>}
-            </div>
-
-            {/* Email Field */}
-            <div>
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type="email"
-                  placeholder="Email"
-                  value={formData.email}
-                  onChange={(e) => handleInputChange('email', e.target.value)}
-                  className={`w-full pl-12 pr-4 py-4 bg-slate-50 border-2 rounded-xl focus:outline-none transition-colors duration-300 ${
-                    errors.email 
-                      ? 'border-red-300 focus:border-red-500' 
-                      : 'border-transparent focus:border-blue-500'
-                  }`}
-                />
-              </div>
-              {errors.email && <p className="mt-2 text-sm text-red-600">{errors.email}</p>}
-            </div>
-
-            {/* Password Field */}
-            <div>
-              <div className="relative">
-                <Lock className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Password"
-                  value={formData.password}
-                  onChange={(e) => handleInputChange('password', e.target.value)}
-                  className={`w-full pl-12 pr-12 py-4 bg-slate-50 border-2 rounded-xl focus:outline-none transition-colors duration-300 ${
-                    errors.password 
-                      ? 'border-red-300 focus:border-red-500' 
-                      : 'border-transparent focus:border-blue-500'
-                  }`}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-              {errors.password && <p className="mt-2 text-sm text-red-600">{errors.password}</p>}
-            </div>
-
-            {/* Confirm Password Field */}
-            <div>
-              <div className="relative">
-                <Check className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-slate-400" />
-                <input
-                  type={showConfirmPassword ? 'text' : 'password'}
-                  placeholder="Confirm Password"
-                  value={formData.confirmPassword}
-                  onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
-                  className={`w-full pl-12 pr-12 py-4 bg-slate-50 border-2 rounded-xl focus:outline-none transition-colors duration-300 ${
-                    errors.confirmPassword 
-                      ? 'border-red-300 focus:border-red-500' 
-                      : 'border-transparent focus:border-blue-500'
-                  }`}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-4 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                >
-                  {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                </button>
-              </div>
-              {errors.confirmPassword && <p className="mt-2 text-sm text-red-600">{errors.confirmPassword}</p>}
-            </div>
-
-            {/* Terms and Privacy */}
-            <div className="text-sm text-slate-600 text-center">
-              By signing up, you agree to our{' '}
-              <button type="button" className="text-blue-600 hover:text-blue-700 underline">
-                Terms of Service
-              </button>{' '}
-              and{' '}
-              <button type="button" className="text-blue-600 hover:text-blue-700 underline">
-                Privacy Policy
-              </button>
-            </div>
-
-            {/* Sign Up Button */}
-            <button
-              type="submit"
-              className="w-full bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-700 hover:to-teal-700 text-white font-medium py-4 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-0.5"
-            >
-              Sign Up
-            </button>
-          </form>
-
-          {/* Divider */}
-          <div className="my-8 flex items-center">
-            <div className="flex-1 border-t border-slate-200"></div>
-            <span className="px-4 text-sm text-slate-500">or continue with</span>
-            <div className="flex-1 border-t border-slate-200"></div>
-          </div>
-
-          {/* Social Sign Up */}
-          <div className="space-y-3">
-            <button className="w-full flex items-center justify-center py-3 px-4 border-2 border-slate-200 rounded-xl hover:border-slate-300 transition-colors duration-300">
-              <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-              </svg>
-              Continue with Google
-            </button>
-            <button className="w-full flex items-center justify-center py-3 px-4 border-2 border-slate-200 rounded-xl hover:border-slate-300 transition-colors duration-300">
-              <svg className="w-5 h-5 mr-3" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12.017 0C5.396 0 .029 5.367.029 11.987c0 5.079 3.158 9.417 7.618 11.024-.105-.949-.199-2.403.041-3.439.219-.937 1.406-5.957 1.406-5.957s-.359-.72-.359-1.781c0-1.663.967-2.911 2.168-2.911 1.024 0 1.518.769 1.518 1.688 0 1.029-.653 2.567-.992 3.992-.285 1.193.6 2.165 1.775 2.165 2.128 0 3.768-2.245 3.768-5.487 0-2.861-2.063-4.869-5.008-4.869-3.41 0-5.409 2.562-5.409 5.199 0 1.033.394 2.143.889 2.741.097.118.112.221.085.345-.09.375-.293 1.199-.334 1.363-.053.225-.172.271-.402.165-1.495-.69-2.433-2.878-2.433-4.646 0-3.776 2.748-7.252 7.92-7.252 4.158 0 7.392 2.967 7.392 6.923 0 4.135-2.607 7.462-6.233 7.462-1.214 0-2.357-.629-2.75-1.378l-.748 2.853c-.271 1.043-1.002 2.35-1.492 3.146C9.57 23.812 10.763 24.009 12.017 24.009c6.624 0 11.99-5.367 11.99-11.988C24.007 5.367 18.641.001.012.001z"/>
-              </svg>
-              Continue with Apple
-            </button>
-          </div>
-
-          {/* Login Link */}
-          <div className="mt-8 text-center">
-            <span className="text-slate-600">Already have an account? </span>
-            <button 
-              onClick={() => navigateToScreen('login')}
-              className="text-blue-600 hover:text-blue-700 font-medium transition-colors duration-300"
-            >
-              Log In
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const OnboardingScreen = () => (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/20 to-teal-50/10 flex flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between p-6">
-        <button 
-          onClick={() => navigateToScreen('welcome')}
-          className="flex items-center text-slate-600 hover:text-blue-600 transition-colors duration-300"
-        >
-          <ArrowLeft className="w-5 h-5 mr-2" />
-          Back
-        </button>
-        <button 
-          onClick={() => console.log('Skip onboarding')}
-          className="text-slate-600 hover:text-blue-600 transition-colors duration-300"
-        >
-          Skip
-        </button>
-      </div>
-
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8">
-        {/* Title */}
-        <div 
-          className={`text-center mb-12 transition-all duration-1000 ease-out ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          <h1 className="text-4xl md:text-5xl font-light text-slate-800 mb-4">
-            Discover Key Features
-          </h1>
-          <p className="text-lg text-slate-600 max-w-md mx-auto">
-            Let's explore what makes Cortex™ your perfect digital companion
-          </p>
-        </div>
-
-        {/* Feature Carousel */}
-        <div 
-          className={`w-full max-w-md mx-auto mb-8 transition-all duration-1000 ease-out delay-300 ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          <div className="relative overflow-hidden">
-            <div 
-              className="flex transition-transform duration-500 ease-out"
-              style={{ transform: `translateX(-${currentFeature * 100}%)` }}
-            >
-              {features.map((feature, index) => (
-                <div key={index} className="w-full flex-shrink-0 px-4">
-                  <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 text-center">
-                    {/* Feature Icon */}
-                    <div className="flex justify-center mb-6">
-                      <div className={`bg-gradient-to-br ${feature.color} p-6 rounded-3xl shadow-lg`}>
-                        <feature.icon className="w-12 h-12 text-white" />
-                      </div>
-                    </div>
-
-                    {/* Feature Title */}
-                    <h3 className="text-2xl font-semibold text-slate-800 mb-4">
-                      {feature.title}
-                    </h3>
-
-                    {/* Feature Description */}
-                    <p className="text-slate-600 leading-relaxed text-lg">
-                      {feature.description}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Pagination Dots */}
-        <div 
-          className={`flex items-center justify-center space-x-3 mb-8 transition-all duration-1000 ease-out delay-500 ${
-            isLoaded ? 'opacity-100' : 'opacity-0'
-          }`}
-        >
-          {features.map((_, index) => (
-            <button
-              key={index}
-              onClick={() => goToFeature(index)}
-              className={`w-3 h-3 rounded-full transition-all duration-300 ${
-                index === currentFeature
-                  ? 'bg-blue-600 scale-125'
-                  : 'bg-slate-300 hover:bg-slate-400'
-              }`}
-            />
-          ))}
-        </div>
-
-        {/* Navigation Controls */}
-        <div 
-          className={`flex items-center justify-between w-full max-w-md mx-auto transition-all duration-1000 ease-out delay-700 ${
-            isLoaded ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
-          }`}
-        >
-          {/* Previous Button */}
-          <button
-            onClick={prevFeature}
-            disabled={currentFeature === 0}
-            className={`flex items-center justify-center w-12 h-12 rounded-full border-2 transition-all duration-300 ${
-              currentFeature === 0
-                ? 'border-slate-200 text-slate-300 cursor-not-allowed'
-                : 'border-slate-300 text-slate-600 hover:border-blue-500 hover:text-blue-600'
-            }`}
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-
-          {/* Next/Done Button */}
-          <button
-            onClick={nextFeature}
-            className="bg-gradient-to-r from-blue-600 to-teal-600 hover:from-blue-700 hover:to-teal-700 text-white font-medium px-8 py-3 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-0.5 flex items-center"
-          >
-            {currentFeature === features.length - 1 ? (
-              <>
-                Get Started
-                <Check className="w-5 h-5 ml-2" />
-              </>
-            ) : (
-              <>
-                Next
-                <ChevronRight className="w-5 h-5 ml-2" />
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Progress Indicator */}
-      <div className="px-6 pb-6">
-        <div className="w-full bg-slate-200 rounded-full h-2">
-          <div 
-            className="bg-gradient-to-r from-blue-600 to-teal-600 h-2 rounded-full transition-all duration-500 ease-out"
-            style={{ width: `${((currentFeature + 1) / features.length) * 100}%` }}
-          />
-        </div>
-        <div className="flex justify-between mt-2 text-sm text-slate-500">
-          <span>{currentFeature + 1} of {features.length}</span>
-          <span>{Math.round(((currentFeature + 1) / features.length) * 100)}% Complete</span>
-        </div>
-      </div>
-    </div>
-  );
-
-  const VoiceFlowAssistant = () => {
-    const quickSuggestions = [
-      "What's on my schedule today?",
-      "Help me prioritize my tasks",
-      "Set a reminder for tomorrow",
-      "Show me my productivity insights"
-    ];
-
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col">
-        {/* Header */}
-        <div className="bg-white border-b border-gray-200 px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={() => setCurrentScreen('dashboard')}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5 text-gray-600" />
-            </button>
-            <button
-              onClick={() => setCurrentScreen('welcome')}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <Home className="w-5 h-5 text-gray-600" />
-            </button>
-            <div>
-              <h1 className="text-lg font-semibold text-gray-900">Talk to VoiceFlow</h1>
-              <p className={`text-sm ${getStatusColor()}`}>{getStatusText()}</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Chat Messages Area */}
-        <div className="flex-1 overflow-y-auto px-4 py-6">
-          {messages.length === 0 ? (
-            <div className="text-center py-12">
-              <h2 className="text-xl font-semibold text-gray-800 mb-2">Ready to Assist</h2>
-              <p className="text-gray-600 mb-8">Ask me anything about your schedule, tasks, or let me help organize your day.</p>
-              
-              {/* Quick Suggestions */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl mx-auto mb-8">
-                {quickSuggestions.map((suggestion, index) => (
-                  <button
-                    key={index}
-                    className={`
-                      bg-white rounded-lg p-4 text-left border border-gray-200
-                      hover:border-blue-300 hover:shadow-md transition-all duration-200
-                    `}
-                    onClick={() => handleTextMessage(suggestion)}
-                  >
-                    <span className="text-gray-700">{suggestion}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex items-start ${message.type === 'user' ? 'justify-end' : 'justify-start'} space-x-2`}
-                >
-                  <div
-                    className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                      message.type === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-white text-gray-800 border border-gray-200'
-                    }`}
-                  >
-                    {message.type === 'assistant' && (
-                      <div className="flex items-center space-x-2 mb-1">
-                        <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center">
-                          <Brain className="w-3 h-3 text-blue-600" />
-                        </div>
-                        <span className="text-xs text-gray-500">VoiceFlow Assistant™</span>
-                        {message.isVoice && <Mic className="w-3 h-3 text-blue-500" />}
-                      </div>
-                    )}
-                    <p className="text-sm">{message.content}</p>
-                    {message.type === 'user' && message.isVoice && <Mic className="w-3 h-3 text-blue-500 mt-1" />}
-                    <p className="text-xs text-gray-400 mt-1">
-                      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Voice Interface */}
-        <div className="px-4 py-6 bg-gradient-to-t from-blue-50 to-white border-t border-gray-100">
-          <div className="flex flex-col items-center space-y-4">
-            {/* Voice Visualizer */}
-            {voiceFlowState.isListening && (
-              <div className="flex items-center space-x-1">
-                {[...Array(5)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="w-1 bg-red-400 rounded-full animate-pulse"
-                    style={{
-                      height: `${Math.random() * 20 + 10}px`,
-                      animationDelay: `${i * 0.1}s`,
-                      animationDuration: '0.5s',
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Control Buttons */}
-            <div className="flex items-center space-x-4">
-              {/* Stop Button (when speaking or processing) */}
-              {(voiceFlowState.isSpeaking || voiceFlowState.isProcessing) && (
-                <button
-                  onClick={stopSpeech}
-                  className="p-3 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors duration-200 shadow-lg"
-                >
-                  <Square className="w-5 h-5" />
-                </button>
-              )}
-
-              {/* Main Microphone Button */}
-              <div className="relative">
-                {voiceFlowState.isListening && (
-                  <div className="absolute inset-0 rounded-full bg-red-400 animate-ping opacity-75" />
-                )}
-                <button
-                  onClick={toggleMicrophone}
-                  disabled={voiceFlowState.isProcessing || voiceFlowState.isSpeaking}
-                  className={`relative p-6 rounded-full shadow-lg transition-all duration-200 ${
-                    voiceFlowState.isListening
-                      ? 'bg-red-500 text-white scale-110'
-                      : voiceFlowState.isProcessing || voiceFlowState.isSpeaking
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                      : 'bg-gradient-to-br from-blue-500 to-blue-600 text-white hover:from-blue-600 hover:to-blue-700 hover:scale-105'
-                  }`}
-                >
-                  {voiceFlowState.isListening ? (
-                    <MicOff className="w-8 h-8" />
-                  ) : (
-                    <Mic className="w-8 h-8" />
-                  )}
-                </button>
-              </div>
-
-              {/* Clear Conversation Button */}
-              {messages.length > 0 && (
-                <button
-                  onClick={clearConversation}
-                  className="p-3 bg-gray-500 text-white rounded-full hover:bg-gray-600 transition-colors duration-200 shadow-lg"
-                  title="Clear conversation"
-                >
-                  <FileText className="w-5 h-5" />
-                </button>
-              )}
-            </div>
-
-            {/* Interim Transcript Display */}
-            {speechRecognition.interimTranscript && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 max-w-md">
-                <p className="text-sm text-blue-700 italic">"{speechRecognition.interimTranscript}"</p>
-              </div>
-            )}
-
-            {/* Error Display */}
-            {voiceFlowState.error && (
-              <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 max-w-md">
-                <p className="text-sm text-red-700">{voiceFlowState.error}</p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Text Input */}
-        <div className="px-4 py-3 bg-white border-t border-gray-100">
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={toggleMicrophone}
-              disabled={voiceFlowState.isProcessing || voiceFlowState.isSpeaking}
-              className={`p-2 rounded-full transition-colors duration-200 ${
-                voiceFlowState.isListening
-                  ? 'bg-red-500 text-white'
-                  : voiceFlowState.isProcessing || voiceFlowState.isSpeaking
-                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                  : 'bg-blue-500 text-white hover:bg-blue-600'
-              }`}
-            >
-              <Mic className="w-5 h-5" />
-            </button>
-            <input
-              type="text"
-              value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
-              placeholder="Type your message or use voice..."
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              onKeyPress={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  handleTextMessage(inputMessage);
-                }
-              }}
-            />
-            <button
-              onClick={() => handleTextMessage(inputMessage)}
-              disabled={!inputMessage.trim()}
-              className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors duration-200"
-            >
-              <Send className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Mobile Navigation */}
-        <div className="bg-white border-t border-gray-200 px-4 py-3">
-          <div className="flex justify-around">
-            <button
-              onClick={() => setCurrentScreen('dashboard')}
-              className="flex flex-col items-center space-y-1 p-2 text-gray-600 hover:text-blue-600 transition-colors duration-200"
-            >
-              <Home className="w-5 h-5" />
-              <span className="text-xs">Dashboard</span>
-            </button>
-            <button className="flex flex-col items-center space-y-1 p-2 text-blue-600">
-              <Mic className="w-5 h-5" />
-              <span className="text-xs">Voice Assistant</span>
-            </button>
-            <button className="flex flex-col items-center space-y-1 p-2 text-gray-600 hover:text-blue-600 transition-colors duration-200">
-              <Calendar className="w-5 h-5" />
-              <span className="text-xs">Calendar</span>
-            </button>
-            <button className="flex flex-col items-center space-y-1 p-2 text-gray-600 hover:text-blue-600 transition-colors duration-200">
-              <Settings className="w-5 h-5" />
-              <span className="text-xs">Settings</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  if (currentScreen === 'voiceflow') {
-    return <VoiceFlowAssistant />;
   }
 
-  return (
-    <>
-      {currentScreen === 'welcome' && <WelcomeScreen />}
-      {currentScreen === 'login' && <LoginScreen />}
-      {currentScreen === 'signup' && <SignUpScreen />}
-      {currentScreen === 'onboarding' && <OnboardingScreen />}
-      {currentScreen === 'dashboard' && <DashboardScreen />}
-    </>
-  );
-}
+  // Welcome Screen
+  if (currentView === 'welcome') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="container mx-auto px-4 py-16">
+          <div className="text-center mb-16">
+            <div className="flex items-center justify-center mb-6">
+              <Brain className="w-16 h-16 text-blue-600 mr-4" />
+              <h1 className="text-5xl font-bold text-gray-800">Cortex™</h1>
+            </div>
+            <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
+              Your unified life management platform. Organize tasks, manage schedules, 
+              and interact with your intelligent voice assistant - all in one place.
+            </p>
+            
+            <div className="flex flex-col sm:flex-row gap-4 justify-center mb-12">
+              {user ? (
+                <>
+                  <button
+                    onClick={navigateToDashboard}
+                    className="bg-blue-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center"
+                  >
+                    <Brain className="w-5 h-5 mr-2" />
+                    Go to Dashboard
+                  </button>
+                  <button
+                    onClick={handleSignOut}
+                    className="bg-gray-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-gray-700 transition-colors flex items-center justify-center"
+                  >
+                    <LogOut className="w-5 h-5 mr-2" />
+                    Sign Out
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={navigateToLogin}
+                    className="bg-blue-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center"
+                  >
+                    <LogIn className="w-5 h-5 mr-2" />
+                    Sign In
+                  </button>
+                  <button
+                    onClick={navigateToSignup}
+                    className="bg-white text-blue-600 px-8 py-3 rounded-lg font-semibold hover:bg-blue-50 transition-colors border-2 border-blue-600 flex items-center justify-center"
+                  >
+                    <UserPlus className="w-5 h-5 mr-2" />
+                    Create Account
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
+            <div className="bg-white p-6 rounded-xl shadow-lg text-center">
+              <Calendar className="w-12 h-12 text-blue-600 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold mb-2">Smart Scheduling</h3>
+              <p className="text-gray-600">Intelligent calendar management with AI-powered suggestions</p>
+            </div>
+            <div className="bg-white p-6 rounded-xl shadow-lg text-center">
+              <CheckSquare className="w-12 h-12 text-green-600 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold mb-2">Task Management</h3>
+              <p className="text-gray-600">Organize and prioritize your tasks with smart automation</p>
+            </div>
+            <div className="bg-white p-6 rounded-xl shadow-lg text-center">
+              <MessageCircle className="w-12 h-12 text-purple-600 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold mb-2">Voice Assistant</h3>
+              <p className="text-gray-600">Natural language interaction with your personal AI assistant</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Login Screen
+  if (currentView === 'login') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <Brain className="w-12 h-12 text-blue-600 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-800">Welcome Back</h2>
+            <p className="text-gray-600">Sign in to your Cortex™ account</p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Email Address
+              </label>
+              <input
+                type="email"
+                value={loginForm.email}
+                onChange={handleLoginEmailChange}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                placeholder="Enter your email"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  type={loginForm.showPassword ? 'text' : 'password'}
+                  value={loginForm.password}
+                  onChange={handleLoginPasswordChange}
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  placeholder="Enter your password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={toggleLoginPasswordVisibility}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                >
+                  {loginForm.showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+
+            {loginForm.error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+                {loginForm.error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={loginForm.loading}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            >
+              {loginForm.loading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <>
+                  <LogIn className="w-5 h-5 mr-2" />
+                  Sign In
+                </>
+              )}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-gray-600">
+              Don't have an account?{' '}
+              <button
+                onClick={navigateToSignup}
+                className="text-blue-600 hover:text-blue-700 font-semibold"
+              >
+                Sign up
+              </button>
+            </p>
+            <button
+              onClick={navigateToWelcome}
+              className="text-gray-500 hover:text-gray-700 text-sm mt-2"
+            >
+              ← Back to home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Signup Screen
+  if (currentView === 'signup') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <Brain className="w-12 h-12 text-blue-600 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-800">Create Account</h2>
+            <p className="text-gray-600">Join Cortex™ and organize your life</p>
+          </div>
+
+          <form onSubmit={handleSignup} className="space-y-6">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Email Address
+              </label>
+              <input
+                type="email"
+                value={signupForm.email}
+                onChange={handleSignupEmailChange}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                placeholder="Enter your email"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  type={signupForm.showPassword ? 'text' : 'password'}
+                  value={signupForm.password}
+                  onChange={handleSignupPasswordChange}
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  placeholder="Create a password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={toggleSignupPasswordVisibility}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                >
+                  {signupForm.showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Confirm Password
+              </label>
+              <div className="relative">
+                <input
+                  type={signupForm.showConfirmPassword ? 'text' : 'password'}
+                  value={signupForm.confirmPassword}
+                  onChange={handleSignupConfirmPasswordChange}
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  placeholder="Confirm your password"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={toggleSignupConfirmPasswordVisibility}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                >
+                  {signupForm.showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
+              </div>
+            </div>
+
+            {signupForm.error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+                {signupForm.error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={signupForm.loading}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            >
+              {signupForm.loading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <>
+                  <UserPlus className="w-5 h-5 mr-2" />
+                  Create Account
+                </>
+              )}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-gray-600">
+              Already have an account?{' '}
+              <button
+                onClick={navigateToLogin}
+                className="text-blue-600 hover:text-blue-700 font-semibold"
+              >
+                Sign in
+              </button>
+            </p>
+            <button
+              onClick={navigateToWelcome}
+              className="text-gray-500 hover:text-gray-700 text-sm mt-2"
+            >
+              ← Back to home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Dashboard Screen
+  if (currentView === 'dashboard') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="container mx-auto px-4 py-8">
+          <div className="flex justify-between items-center mb-8">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
+              <p className="text-gray-600">Welcome back, {user?.email}</p>
+            </div>
+            <div className="flex gap-4">
+              <button
+                onClick={navigateToVoice}
+                className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center"
+              >
+                <MessageCircle className="w-5 h-5 mr-2" />
+                Voice Assistant
+              </button>
+              <button
+                onClick={handleSignOut}
+                className="bg-gray-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-700 transition-colors flex items-center"
+              >
+                <LogOut className="w-5 h-5 mr-2" />
+                Sign Out
+              </button>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+              <div className="flex items-center mb-4">
+                <Calendar className="w-8 h-8 text-blue-600 mr-3" />
+                <h3 className="text-xl font-semibold">Schedule</h3>
+              </div>
+              <p className="text-gray-600 mb-4">Manage your calendar and appointments</p>
+              <button className="bg-blue-100 text-blue-700 px-4 py-2 rounded-lg hover:bg-blue-200 transition-colors">
+                View Calendar
+              </button>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+              <div className="flex items-center mb-4">
+                <CheckSquare className="w-8 h-8 text-green-600 mr-3" />
+                <h3 className="text-xl font-semibold">Tasks</h3>
+              </div>
+              <p className="text-gray-600 mb-4">Organize and track your to-do items</p>
+              <button className="bg-green-100 text-green-700 px-4 py-2 rounded-lg hover:bg-green-200 transition-colors">
+                Manage Tasks
+              </button>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+              <div className="flex items-center mb-4">
+                <MessageCircle className="w-8 h-8 text-purple-600 mr-3" />
+                <h3 className="text-xl font-semibold">Voice Assistant</h3>
+              </div>
+              <p className="text-gray-600 mb-4">Chat with your AI-powered assistant</p>
+              <button
+                onClick={navigateToVoice}
+                className="bg-purple-100 text-purple-700 px-4 py-2 rounded-lg hover:bg-purple-200 transition-colors"
+              >
+                Start Conversation
+              </button>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+              <div className="flex items-center mb-4">
+                <Zap className="w-8 h-8 text-yellow-600 mr-3" />
+                <h3 className="text-xl font-semibold">Quick Actions</h3>
+              </div>
+              <p className="text-gray-600 mb-4">Shortcuts to common tasks</p>
+              <button className="bg-yellow-100 text-yellow-700 px-4 py-2 rounded-lg hover:bg-yellow-200 transition-colors">
+                View Actions
+              </button>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+              <div className="flex items-center mb-4">
+                <Brain className="w-8 h-8 text-indigo-600 mr-3" />
+                <h3 className="text-xl font-semibold">Insights</h3>
+              </div>
+              <p className="text-gray-600 mb-4">AI-powered productivity insights</p>
+              <button className="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-lg hover:bg-indigo-200 transition-colors">
+                View Insights
+              </button>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-lg">
+              <div className="flex items-center mb-4">
+                <User className="w-8 h-8 text-gray-600 mr-3" />
+                <h3 className="text-xl font-semibold">Profile</h3>
+              </div>
+              <p className="text-gray-600 mb-4">Manage your account settings</p>
+              <button className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors">
+                Edit Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Voice Assistant Screen
+  if (currentView === 'voice') {
+    const getStatusText = () => {
+      if (voiceFlowState.error) return 'Error occurred';
+      if (voiceFlowState.isProcessing) return 'Processing...';
+      if (voiceFlowState.isSpeaking) return 'Speaking...';
+      if (voiceFlowState.isListening) return 'Listening...';
+      return 'Ready to help';
+    };
+
+    const getStatusColor = () => {
+      if (voiceFlowState.error) return 'text-red-600';
+      if (voiceFlowState.isProcessing) return 'text-yellow-600';
+      if (voiceFlowState.isSpeaking) return 'text-green-600';
+      if (voiceFlowState.isListening) return 'text-blue-600';
+      return 'text-gray-600';
+    };
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+        <div className="container mx-auto px-4 py-8 max-w-4xl">
+          {/* Header */}
+          <div className="flex justify-between items-center mb-8">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-800 flex items-center">
+                <MessageCircle className="w-8 h-8 mr-3 text-blue-600" />
+                VoiceFlow Assistant™
+              </h1>
+              <p className={`text-sm ${getStatusColor()}`}>
+                {getStatusText()}
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={clearConversation}
+                className="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
+              >
+                Clear Chat
+              </button>
+              <button
+                onClick={navigateToDashboard}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+              >
+                Dashboard
+              </button>
+            </div>
+          </div>
+
+          {/* Chat Messages */}
+          <div className="bg-white rounded-2xl shadow-xl mb-6 h-96 overflow-y-auto p-6">
+            {messages.length === 0 ? (
+              <div className="text-center text-gray-500 mt-20">
+                <MessageCircle className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                <p className="text-lg mb-2">Welcome to VoiceFlow Assistant™</p>
+                <p>Start a conversation by speaking or typing a message</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl ${
+                        message.type === 'user'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-100 text-gray-800'
+                      }`}
+                    >
+                      <div className="flex items-center mb-1">
+                        {message.type === 'user' ? (
+                          <User className="w-4 h-4 mr-2" />
+                        ) : (
+                          <Bot className="w-4 h-4 mr-2" />
+                        )}
+                        <span className="text-xs opacity-75">
+                          {message.timestamp.toLocaleTimeString()}
+                        </span>
+                        {message.isVoice && (
+                          <Volume2 className="w-3 h-3 ml-2 opacity-75" />
+                        )}
+                      </div>
+                      <p className="text-sm">{message.content}</p>
+                    </div>
+                  </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </div>
+
+          {/* Interim Transcript */}
+          {(interimTranscript || voiceFlowState.isListening) && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+              <div className="flex items-center">
+                <Mic className="w-4 h-4 text-blue-600 mr-2" />
+                <span className="text-sm text-blue-800">
+                  {interimTranscript || 'Listening...'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Error Display */}
+          {voiceFlowState.error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
+              <p className="text-sm">{voiceFlowState.error}</p>
+            </div>
+          )}
+
+          {/* Controls */}
+          <div className="bg-white rounded-2xl shadow-xl p-6">
+            <div className="flex items-center gap-4 mb-4">
+              {/* Microphone Button */}
+              <button
+                onClick={handleMicToggle}
+                disabled={!speechSupported || voiceFlowState.isProcessing}
+                className={`p-4 rounded-full transition-all duration-200 ${
+                  voiceFlowState.isListening
+                    ? 'bg-red-600 hover:bg-red-700 animate-pulse'
+                    : 'bg-blue-600 hover:bg-blue-700'
+                } text-white disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                {voiceFlowState.isListening ? (
+                  <MicOff className="w-6 h-6" />
+                ) : (
+                  <Mic className="w-6 h-6" />
+                )}
+              </button>
+
+              {/* Stop Speaking Button */}
+              {voiceFlowState.isSpeaking && (
+                <button
+                  onClick={handleStopSpeaking}
+                  className="p-4 rounded-full bg-orange-600 hover:bg-orange-700 text-white transition-colors"
+                >
+                  <Square className="w-6 h-6" />
+                </button>
+              )}
+
+              {/* Processing Indicator */}
+              {voiceFlowState.isProcessing && (
+                <div className="flex items-center text-yellow-600">
+                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                  <span className="text-sm">Processing...</span>
+                </div>
+              )}
+
+              {/* Speaking Indicator */}
+              {voiceFlowState.isSpeaking && (
+                <div className="flex items-center text-green-600">
+                  <Volume2 className="w-5 h-5 mr-2" />
+                  <span className="text-sm">Speaking...</span>
+                </div>
+              )}
+            </div>
+
+            {/* Text Input */}
+            <form onSubmit={handleTextSubmit} className="flex gap-3">
+              <input
+                ref={textInputRef}
+                type="text"
+                value={textInput}
+                onChange={handleTextInputChange}
+                placeholder="Type your message or use the microphone..."
+                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                disabled={voiceFlowState.isProcessing}
+              />
+              <button
+                type="submit"
+                disabled={!textInput.trim() || voiceFlowState.isProcessing}
+                className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            </form>
+
+            {/* Browser Support Info */}
+            {!speechSupported && (
+              <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded-lg">
+                <p className="text-sm">
+                  Speech recognition is not supported in your browser. You can still use text input.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+};
 
 export default App;
