@@ -18,13 +18,30 @@ import {
   Calendar,
   CheckSquare,
   MessageCircle,
-  Zap
+  Zap,
+  Plus,
+  Trash2,
+  Menu,
+  X,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import { useAuth } from './hooks/useAuth';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
 import { authHelpers } from './lib/supabase';
-import { Message, VoiceFlowState, ProcessVoiceCommandResponse } from './types/voiceflow';
+import { ConversationService } from './lib/conversations';
+import { Message as VoiceMessage, VoiceFlowState, ProcessVoiceCommandResponse } from './types/voiceflow';
+import { Conversation, Message as DBMessage, ConversationSummary } from './types/database';
+
+// Extended message type for UI
+interface UIMessage {
+  id: string;
+  type: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  isVoice?: boolean;
+}
 
 const App: React.FC = () => {
   const { user, loading: authLoading } = useAuth();
@@ -52,7 +69,7 @@ const App: React.FC = () => {
   });
 
   // Voice assistant states
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<UIMessage[]>([]);
   const [textInput, setTextInput] = useState('');
   const [voiceFlowState, setVoiceFlowState] = useState<VoiceFlowState>({
     isListening: false,
@@ -60,6 +77,15 @@ const App: React.FC = () => {
     isSpeaking: false,
     error: null,
   });
+
+  // Database conversation states
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null);
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
 
   // Hooks
   const {
@@ -110,6 +136,170 @@ const App: React.FC = () => {
       resetTranscript();
     }
   }, [transcript, isListening]);
+
+  // Load user conversations when authenticated and in voice view
+  useEffect(() => {
+    if (user && currentView === 'voice') {
+      loadUserConversations();
+    }
+  }, [user, currentView]);
+
+  // Load conversation messages when conversation changes
+  useEffect(() => {
+    if (currentConversationId) {
+      loadConversationMessages(currentConversationId);
+    } else {
+      setMessages([]);
+      setCurrentConversation(null);
+    }
+  }, [currentConversationId]);
+
+  // Database operations
+  const loadUserConversations = useCallback(async () => {
+    if (!user) return;
+
+    setLoadingConversations(true);
+    try {
+      const { data, error } = await ConversationService.getUserConversations(user.id);
+      if (error) {
+        console.error('Error loading conversations:', error);
+        setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load conversations' }));
+      } else if (data) {
+        setConversations(data);
+        // If no current conversation and we have conversations, select the first one
+        if (!currentConversationId && data.length > 0) {
+          setCurrentConversationId(data[0].id);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading conversations:', error);
+      setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load conversations' }));
+    } finally {
+      setLoadingConversations(false);
+    }
+  }, [user, currentConversationId]);
+
+  const loadConversationMessages = useCallback(async (conversationId: string) => {
+    setLoadingMessages(true);
+    try {
+      const { data, error } = await ConversationService.getConversationHistory(conversationId);
+      if (error) {
+        console.error('Error loading messages:', error);
+        setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load messages' }));
+      } else if (data) {
+        setCurrentConversation(data);
+        // Convert DB messages to UI messages
+        const uiMessages: UIMessage[] = data.messages.map(msg => ({
+          id: msg.id,
+          type: msg.role,
+          content: msg.content,
+          timestamp: new Date(msg.created_at),
+          isVoice: msg.is_voice,
+        }));
+        setMessages(uiMessages);
+      }
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load messages' }));
+    } finally {
+      setLoadingMessages(false);
+    }
+  }, []);
+
+  const createNewConversation = useCallback(async (firstMessage?: string) => {
+    if (!user) return null;
+
+    try {
+      const title = firstMessage ? 
+        firstMessage.substring(0, 50) + (firstMessage.length > 50 ? '...' : '') : 
+        'New Conversation';
+      
+      const { data, error } = await ConversationService.createConversation(user.id, title);
+      if (error) {
+        console.error('Error creating conversation:', error);
+        setVoiceFlowState(prev => ({ ...prev, error: 'Failed to create conversation' }));
+        return null;
+      }
+
+      if (data) {
+        // Add to conversations list
+        setConversations(prev => [data, ...prev]);
+        // Set as current conversation
+        setCurrentConversationId(data.id);
+        return data;
+      }
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+      setVoiceFlowState(prev => ({ ...prev, error: 'Failed to create conversation' }));
+    }
+    return null;
+  }, [user]);
+
+  const saveMessageToDatabase = useCallback(async (
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string,
+    isVoice: boolean = false
+  ) => {
+    try {
+      const { data, error } = await ConversationService.addMessage(
+        conversationId,
+        role,
+        content,
+        isVoice
+      );
+      
+      if (error) {
+        console.error('Error saving message:', error);
+        setVoiceFlowState(prev => ({ ...prev, error: 'Failed to save message' }));
+        return null;
+      }
+
+      // Update conversations list to reflect new last_message_at
+      setConversations(prev => 
+        prev.map(conv => 
+          conv.id === conversationId 
+            ? { ...conv, last_message_at: new Date().toISOString(), last_message_content: content }
+            : conv
+        ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+      );
+
+      return data;
+    } catch (error) {
+      console.error('Error saving message:', error);
+      setVoiceFlowState(prev => ({ ...prev, error: 'Failed to save message' }));
+      return null;
+    }
+  }, []);
+
+  const deleteConversation = useCallback(async (conversationId: string) => {
+    if (!window.confirm('Are you sure you want to delete this conversation? This action cannot be undone.')) {
+      return;
+    }
+
+    setDeletingConversationId(conversationId);
+    try {
+      const { error } = await ConversationService.deleteConversation(conversationId);
+      if (error) {
+        console.error('Error deleting conversation:', error);
+        setVoiceFlowState(prev => ({ ...prev, error: 'Failed to delete conversation' }));
+      } else {
+        // Remove from conversations list
+        setConversations(prev => prev.filter(conv => conv.id !== conversationId));
+        // If this was the current conversation, clear it
+        if (currentConversationId === conversationId) {
+          setCurrentConversationId(null);
+          setMessages([]);
+          setCurrentConversation(null);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
+      setVoiceFlowState(prev => ({ ...prev, error: 'Failed to delete conversation' }));
+    } finally {
+      setDeletingConversationId(null);
+    }
+  }, [currentConversationId]);
 
   // Memoized handlers to prevent re-renders
   const handleLoginEmailChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -228,6 +418,9 @@ const App: React.FC = () => {
     setCurrentView('welcome');
     setMessages([]);
     setTextInput('');
+    setConversations([]);
+    setCurrentConversationId(null);
+    setCurrentConversation(null);
   }, []);
 
   // Voice command processing
@@ -267,9 +460,17 @@ const App: React.FC = () => {
   }, [messages]);
 
   const handleVoiceCommand = useCallback(async (message: string) => {
-    if (!message.trim()) return;
+    if (!message.trim() || !user) return;
 
-    const userMessage: Message = {
+    // Create conversation if none exists
+    let conversationId = currentConversationId;
+    if (!conversationId) {
+      const newConversation = await createNewConversation(message);
+      if (!newConversation) return;
+      conversationId = newConversation.id;
+    }
+
+    const userMessage: UIMessage = {
       id: Date.now().toString(),
       type: 'user',
       content: message,
@@ -277,21 +478,31 @@ const App: React.FC = () => {
       isVoice: true,
     };
 
+    // Optimistic update - add message to UI immediately
     setMessages(prev => [...prev, userMessage]);
     setVoiceFlowState(prev => ({ ...prev, isProcessing: true, error: null }));
 
     try {
+      // Save user message to database
+      await saveMessageToDatabase(conversationId, 'user', message, true);
+
+      // Process voice command
       const response = await processVoiceCommand(message);
       
-      const assistantMessage: Message = {
+      const assistantMessage: UIMessage = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
         content: response,
         timestamp: new Date(),
       };
 
+      // Add assistant message to UI
       setMessages(prev => [...prev, assistantMessage]);
       
+      // Save assistant message to database
+      await saveMessageToDatabase(conversationId, 'assistant', response, false);
+      
+      // Speak the response
       if (ttsSupported) {
         speak(response);
       }
@@ -299,7 +510,7 @@ const App: React.FC = () => {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       setVoiceFlowState(prev => ({ ...prev, error: errorMessage }));
       
-      const errorResponse: Message = {
+      const errorResponse: UIMessage = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
         content: `I apologize, but I encountered an error: ${errorMessage}`,
@@ -310,7 +521,7 @@ const App: React.FC = () => {
     } finally {
       setVoiceFlowState(prev => ({ ...prev, isProcessing: false }));
     }
-  }, [processVoiceCommand, speak, ttsSupported]);
+  }, [user, currentConversationId, createNewConversation, saveMessageToDatabase, processVoiceCommand, speak, ttsSupported]);
 
   const handleTextSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -337,7 +548,29 @@ const App: React.FC = () => {
     setTextInput('');
     resetTranscript();
     stopSpeaking();
+    setCurrentConversationId(null);
+    setCurrentConversation(null);
   }, [resetTranscript, stopSpeaking]);
+
+  const handleNewConversation = useCallback(() => {
+    setCurrentConversationId(null);
+    setCurrentConversation(null);
+    setMessages([]);
+    setTextInput('');
+    resetTranscript();
+    stopSpeaking();
+  }, [resetTranscript, stopSpeaking]);
+
+  const handleConversationSelect = useCallback((conversationId: string) => {
+    if (conversationId !== currentConversationId) {
+      setCurrentConversationId(conversationId);
+      stopSpeaking(); // Stop any current speech
+    }
+  }, [currentConversationId, stopSpeaking]);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen(prev => !prev);
+  }, []);
 
   // Navigation handlers
   const navigateToLogin = useCallback(() => setCurrentView('login'), []);
@@ -765,26 +998,114 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-        <div className="container mx-auto px-4 py-8 max-w-4xl">
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex">
+        {/* Sidebar */}
+        <div className={`${sidebarOpen ? 'w-80' : 'w-0'} transition-all duration-300 overflow-hidden bg-white shadow-xl flex flex-col`}>
+          {/* Sidebar Header */}
+          <div className="p-4 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-800">Conversations</h2>
+              <button
+                onClick={toggleSidebar}
+                className="p-1 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <ChevronLeft className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <button
+              onClick={handleNewConversation}
+              className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              New Conversation
+            </button>
+          </div>
+
+          {/* Conversations List */}
+          <div className="flex-1 overflow-y-auto">
+            {loadingConversations ? (
+              <div className="p-4 text-center">
+                <Loader2 className="w-6 h-6 animate-spin text-blue-600 mx-auto mb-2" />
+                <p className="text-sm text-gray-600">Loading conversations...</p>
+              </div>
+            ) : conversations.length === 0 ? (
+              <div className="p-4 text-center text-gray-500">
+                <MessageCircle className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                <p className="text-sm">No conversations yet</p>
+                <p className="text-xs">Start a new conversation to get started</p>
+              </div>
+            ) : (
+              <div className="p-2">
+                {conversations.map((conversation) => (
+                  <div
+                    key={conversation.id}
+                    className={`p-3 mb-2 rounded-lg cursor-pointer transition-colors group ${
+                      currentConversationId === conversation.id
+                        ? 'bg-blue-100 border border-blue-200'
+                        : 'hover:bg-gray-50'
+                    }`}
+                    onClick={() => handleConversationSelect(conversation.id)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="text-sm font-medium text-gray-800 truncate">
+                          {conversation.title}
+                        </h3>
+                        {conversation.last_message_content && (
+                          <p className="text-xs text-gray-500 truncate mt-1">
+                            {conversation.last_message_content}
+                          </p>
+                        )}
+                        <p className="text-xs text-gray-400 mt-1">
+                          {new Date(conversation.last_message_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteConversation(conversation.id);
+                        }}
+                        disabled={deletingConversationId === conversation.id}
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 rounded transition-all ml-2"
+                      >
+                        {deletingConversationId === conversation.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-red-600" />
+                        ) : (
+                          <Trash2 className="w-4 h-4 text-red-600" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Main Content */}
+        <div className="flex-1 flex flex-col">
           {/* Header */}
-          <div className="flex justify-between items-center mb-8">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-800 flex items-center">
-                <MessageCircle className="w-8 h-8 mr-3 text-blue-600" />
-                VoiceFlow Assistant™
-              </h1>
-              <p className={`text-sm ${getStatusColor()}`}>
-                {getStatusText()}
-              </p>
+          <div className="bg-white shadow-sm p-4 flex items-center justify-between">
+            <div className="flex items-center">
+              {!sidebarOpen && (
+                <button
+                  onClick={toggleSidebar}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors mr-3"
+                >
+                  <Menu className="w-5 h-5 text-gray-500" />
+                </button>
+              )}
+              <div>
+                <h1 className="text-xl font-bold text-gray-800 flex items-center">
+                  <MessageCircle className="w-6 h-6 mr-2 text-blue-600" />
+                  {currentConversation ? currentConversation.title : 'VoiceFlow Assistant™'}
+                </h1>
+                <p className={`text-sm ${getStatusColor()}`}>
+                  {getStatusText()}
+                </p>
+              </div>
             </div>
             <div className="flex gap-3">
-              <button
-                onClick={clearConversation}
-                className="bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 transition-colors"
-              >
-                Clear Chat
-              </button>
               <button
                 onClick={navigateToDashboard}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
@@ -795,15 +1116,20 @@ const App: React.FC = () => {
           </div>
 
           {/* Chat Messages */}
-          <div className="bg-white rounded-2xl shadow-xl mb-6 h-96 overflow-y-auto p-6">
-            {messages.length === 0 ? (
+          <div className="flex-1 overflow-y-auto p-6">
+            {loadingMessages ? (
+              <div className="text-center mt-20">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
+                <p className="text-gray-600">Loading messages...</p>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="text-center text-gray-500 mt-20">
                 <MessageCircle className="w-16 h-16 mx-auto mb-4 text-gray-300" />
                 <p className="text-lg mb-2">Welcome to VoiceFlow Assistant™</p>
                 <p>Start a conversation by speaking or typing a message</p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-4 max-w-4xl mx-auto">
                 {messages.map((message) => (
                   <div
                     key={message.id}
@@ -840,98 +1166,104 @@ const App: React.FC = () => {
 
           {/* Interim Transcript */}
           {(interimTranscript || voiceFlowState.isListening) && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-              <div className="flex items-center">
-                <Mic className="w-4 h-4 text-blue-600 mr-2" />
-                <span className="text-sm text-blue-800">
-                  {interimTranscript || 'Listening...'}
-                </span>
+            <div className="px-6 pb-2">
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-4xl mx-auto">
+                <div className="flex items-center">
+                  <Mic className="w-4 h-4 text-blue-600 mr-2" />
+                  <span className="text-sm text-blue-800">
+                    {interimTranscript || 'Listening...'}
+                  </span>
+                </div>
               </div>
             </div>
           )}
 
           {/* Error Display */}
           {voiceFlowState.error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">
-              <p className="text-sm">{voiceFlowState.error}</p>
+            <div className="px-6 pb-2">
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg max-w-4xl mx-auto">
+                <p className="text-sm">{voiceFlowState.error}</p>
+              </div>
             </div>
           )}
 
           {/* Controls */}
-          <div className="bg-white rounded-2xl shadow-xl p-6">
-            <div className="flex items-center gap-4 mb-4">
-              {/* Microphone Button */}
-              <button
-                onClick={handleMicToggle}
-                disabled={!speechSupported || voiceFlowState.isProcessing}
-                className={`p-4 rounded-full transition-all duration-200 ${
-                  voiceFlowState.isListening
-                    ? 'bg-red-600 hover:bg-red-700 animate-pulse'
-                    : 'bg-blue-600 hover:bg-blue-700'
-                } text-white disabled:opacity-50 disabled:cursor-not-allowed`}
-              >
-                {voiceFlowState.isListening ? (
-                  <MicOff className="w-6 h-6" />
-                ) : (
-                  <Mic className="w-6 h-6" />
-                )}
-              </button>
-
-              {/* Stop Speaking Button */}
-              {voiceFlowState.isSpeaking && (
+          <div className="bg-white border-t border-gray-200 p-6">
+            <div className="max-w-4xl mx-auto">
+              <div className="flex items-center gap-4 mb-4">
+                {/* Microphone Button */}
                 <button
-                  onClick={handleStopSpeaking}
-                  className="p-4 rounded-full bg-orange-600 hover:bg-orange-700 text-white transition-colors"
+                  onClick={handleMicToggle}
+                  disabled={!speechSupported || voiceFlowState.isProcessing}
+                  className={`p-4 rounded-full transition-all duration-200 ${
+                    voiceFlowState.isListening
+                      ? 'bg-red-600 hover:bg-red-700 animate-pulse'
+                      : 'bg-blue-600 hover:bg-blue-700'
+                  } text-white disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
-                  <Square className="w-6 h-6" />
+                  {voiceFlowState.isListening ? (
+                    <MicOff className="w-6 h-6" />
+                  ) : (
+                    <Mic className="w-6 h-6" />
+                  )}
                 </button>
-              )}
 
-              {/* Processing Indicator */}
-              {voiceFlowState.isProcessing && (
-                <div className="flex items-center text-yellow-600">
-                  <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                  <span className="text-sm">Processing...</span>
-                </div>
-              )}
+                {/* Stop Speaking Button */}
+                {voiceFlowState.isSpeaking && (
+                  <button
+                    onClick={handleStopSpeaking}
+                    className="p-4 rounded-full bg-orange-600 hover:bg-orange-700 text-white transition-colors"
+                  >
+                    <Square className="w-6 h-6" />
+                  </button>
+                )}
 
-              {/* Speaking Indicator */}
-              {voiceFlowState.isSpeaking && (
-                <div className="flex items-center text-green-600">
-                  <Volume2 className="w-5 h-5 mr-2" />
-                  <span className="text-sm">Speaking...</span>
+                {/* Processing Indicator */}
+                {voiceFlowState.isProcessing && (
+                  <div className="flex items-center text-yellow-600">
+                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                    <span className="text-sm">Processing...</span>
+                  </div>
+                )}
+
+                {/* Speaking Indicator */}
+                {voiceFlowState.isSpeaking && (
+                  <div className="flex items-center text-green-600">
+                    <Volume2 className="w-5 h-5 mr-2" />
+                    <span className="text-sm">Speaking...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Text Input */}
+              <form onSubmit={handleTextSubmit} className="flex gap-3">
+                <input
+                  ref={textInputRef}
+                  type="text"
+                  value={textInput}
+                  onChange={handleTextInputChange}
+                  placeholder="Type your message or use the microphone..."
+                  className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  disabled={voiceFlowState.isProcessing}
+                />
+                <button
+                  type="submit"
+                  disabled={!textInput.trim() || voiceFlowState.isProcessing}
+                  className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                >
+                  <Send className="w-5 h-5" />
+                </button>
+              </form>
+
+              {/* Browser Support Info */}
+              {!speechSupported && (
+                <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded-lg">
+                  <p className="text-sm">
+                    Speech recognition is not supported in your browser. You can still use text input.
+                  </p>
                 </div>
               )}
             </div>
-
-            {/* Text Input */}
-            <form onSubmit={handleTextSubmit} className="flex gap-3">
-              <input
-                ref={textInputRef}
-                type="text"
-                value={textInput}
-                onChange={handleTextInputChange}
-                placeholder="Type your message or use the microphone..."
-                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                disabled={voiceFlowState.isProcessing}
-              />
-              <button
-                type="submit"
-                disabled={!textInput.trim() || voiceFlowState.isProcessing}
-                className="bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
-              >
-                <Send className="w-5 h-5" />
-              </button>
-            </form>
-
-            {/* Browser Support Info */}
-            {!speechSupported && (
-              <div className="mt-4 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded-lg">
-                <p className="text-sm">
-                  Speech recognition is not supported in your browser. You can still use text input.
-                </p>
-              </div>
-            )}
           </div>
         </div>
       </div>
