@@ -92,7 +92,9 @@ export const useSpeechSynthesis = (): UseSpeechSynthesisReturn => {
     });
 
     utterance.addEventListener('error', (event) => {
-      console.error('Speech synthesis error:', event.error);
+      if (event.error !== 'interrupted' && event.error !== 'canceled') {
+        console.error('Speech synthesis error:', event.error);
+      }
       setIsSpeaking(false);
       setIsPaused(false);
       utteranceRef.current = null;
