@@ -1321,6 +1321,17 @@ const App: React.FC = () => {
                   className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                   disabled={voiceFlowState.isProcessing}
                 />
+                {/* Forgot Password Link */}
+                <div className="text-right mb-6">
+                  <button
+                    type="button"
+                    onClick={() => setAuthMode('forgotPassword')}
+                    className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors"
+                  >
+                    Forgot Password?
+                  </button>
+                </div>
+
                 <button
                   type="submit"
                   disabled={!textInput.trim() || voiceFlowState.isProcessing}
