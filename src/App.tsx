@@ -1149,10 +1149,10 @@ const SignInForm: React.FC<{
               </button>
             </div>
 
-    } else if (authMode === 'forgotPassword') {
-      return <ForgotPasswordForm onBack={() => setAuthMode('signIn')} />
-              }
-  
+      } else if (authMode === 'forgotPassword') {
+    return <ForgotPasswordForm onBack={() => setAuthMode('signIn')} />;
+      }
+
       return (
             <div className="bg-white p-6 rounded-xl shadow-lg">
               <div className="flex items-center mb-4">
