@@ -1151,6 +1151,9 @@ const SignInForm: React.FC<{
 
     } else if (authMode === 'forgotPassword') {
       return <ForgotPasswordForm onBack={() => setAuthMode('signIn')} />;
+              }
+  
+      return (
             <div className="bg-white p-6 rounded-xl shadow-lg">
               <div className="flex items-center mb-4">
                 <User className="w-8 h-8 text-gray-600 mr-3" />
