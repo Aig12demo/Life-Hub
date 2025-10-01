@@ -24,15 +24,18 @@ import {
   Menu,
   X,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Settings
 } from 'lucide-react';
 import { useAuth } from './hooks/useAuth';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
 import { authHelpers } from './lib/supabase';
 import { ConversationService } from './lib/conversations';
+import { ProfileService } from './lib/profiles';
+import { ProfilePage } from './components/ProfilePage';
 import { Message as VoiceMessage, VoiceFlowState, ProcessVoiceCommandResponse } from './types/voiceflow';
-import { Conversation, Message as DBMessage, ConversationSummary } from './types/database';
+import { Conversation, Message as DBMessage, ConversationSummary, Profile } from './types/database';
 
 // Extended message type for UI
 interface UIMessage {
@@ -47,7 +50,10 @@ const App: React.FC = () => {
   const { user, loading: authLoading } = useAuth();
   
   // Navigation state
-  const [currentView, setCurrentView] = useState<'welcome' | 'login' | 'signup' | 'dashboard' | 'voice'>('welcome');
+  const [currentView, setCurrentView] = useState<'welcome' | 'login' | 'signup' | 'dashboard' | 'voice' | 'profile'>('welcome');
+  
+  // Profile state
+  const [userProfile, setUserProfile] = useState<Profile | null>(null);
   
   // Auth form states - using separate state objects to prevent re-renders
   const [loginForm, setLoginForm] = useState({
@@ -144,6 +150,13 @@ const App: React.FC = () => {
     }
   }, [user, currentView]);
 
+  // Load user profile when authenticated
+  useEffect(() => {
+    if (user) {
+      loadUserProfile();
+    }
+  }, [user]);
+
   // Load conversation messages when conversation changes
   useEffect(() => {
     if (currentConversationId) {
@@ -153,6 +166,20 @@ const App: React.FC = () => {
       setCurrentConversation(null);
     }
   }, [currentConversationId]);
+
+  // Load user profile
+  const loadUserProfile = useCallback(async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await ProfileService.getProfile(user.id);
+      if (!error && data) {
+        setUserProfile(data);
+      }
+    } catch (error) {
+      console.error('Error loading user profile:', error);
+    }
+  }, [user]);
 
   // Database operations
   const loadUserConversations = useCallback(async () => {
@@ -578,6 +605,7 @@ const App: React.FC = () => {
   const navigateToDashboard = useCallback(() => setCurrentView('dashboard'), []);
   const navigateToVoice = useCallback(() => setCurrentView('voice'), []);
   const navigateToWelcome = useCallback(() => setCurrentView('welcome'), []);
+  const navigateToProfile = useCallback(() => setCurrentView('profile'), []);
 
   // Loading screen
   if (authLoading) {
@@ -589,6 +617,11 @@ const App: React.FC = () => {
         </div>
       </div>
     );
+  }
+
+  // Profile Screen
+  if (currentView === 'profile') {
+    return <ProfilePage onBack={navigateToDashboard} />;
   }
 
   // Welcome Screen
@@ -886,7 +919,28 @@ const App: React.FC = () => {
               <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
               <p className="text-gray-600">Welcome back, {user?.email}</p>
             </div>
-            <div className="flex gap-4">
+            <div className="flex items-center gap-4">
+              {/* Profile Avatar */}
+              <button
+                onClick={navigateToProfile}
+                className="flex items-center gap-3 bg-white px-4 py-2 rounded-lg shadow-sm hover:shadow-md transition-all"
+              >
+                <div className="w-8 h-8 rounded-full overflow-hidden bg-gradient-to-br from-blue-400 to-blue-600">
+                  {userProfile?.avatar_url ? (
+                    <img
+                      src={userProfile.avatar_url}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <User className="w-full h-full p-1 text-white" />
+                  )}
+                </div>
+                <span className="text-sm font-medium text-gray-700">
+                  {userProfile?.nickname || 'Profile'}
+                </span>
+              </button>
+              
               <button
                 onClick={navigateToVoice}
                 className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center"
@@ -1105,7 +1159,28 @@ const App: React.FC = () => {
                 </p>
               </div>
             </div>
-            <div className="flex gap-3">
+            <div className="flex items-center gap-3">
+              {/* Profile Avatar */}
+              <button
+                onClick={navigateToProfile}
+                className="flex items-center gap-2 bg-gray-50 hover:bg-gray-100 px-3 py-2 rounded-lg transition-colors"
+              >
+                <div className="w-6 h-6 rounded-full overflow-hidden bg-gradient-to-br from-blue-400 to-blue-600">
+                  {userProfile?.avatar_url ? (
+                    <img
+                      src={userProfile.avatar_url}
+                      alt="Profile"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <User className="w-full h-full p-0.5 text-white" />
+                  )}
+                </div>
+                <span className="text-sm font-medium text-gray-700 hidden sm:inline">
+                  {userProfile?.nickname || 'Profile'}
+                </span>
+              </button>
+              
               <button
                 onClick={navigateToDashboard}
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
