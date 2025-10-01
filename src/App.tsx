@@ -328,7 +328,8 @@ const SignInForm: React.FC<{
   onSwitchToSignUp: () => void;
   onSwitchToForgotPassword: () => void;
 }> = ({ onSwitchToSignUp, onSwitchToForgotPassword }) => {
-      try {
+  useEffect(() => {    
+  try {
   setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load conversations' }));
 } catch (error) {
   // Handle error if needed
