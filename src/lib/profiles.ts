@@ -10,7 +10,7 @@ export class ProfileService {
       .from('profiles')
       .select('*')
       .eq('id', userId)
-      .single();
+      .maybeSingle();
 
     return { data, error };
   }
