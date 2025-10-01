@@ -1150,7 +1150,7 @@ const SignInForm: React.FC<{
             </div>
 
       } else if (authMode === 'forgotPassword') {
-    return <ForgotPasswordForm onBack={() => setAuthMode('signIn')} />;
+    return <ForgotPasswordForm onBack={() => setAuthMode('signIn')} />
       }
 
       return (
