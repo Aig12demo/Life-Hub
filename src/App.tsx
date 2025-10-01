@@ -330,7 +330,7 @@ const SignInForm: React.FC<{
   onSwitchToForgotPassword: () => void;
 }> = ({ onSwitchToSignUp, onSwitchToForgotPassword }) => {
       setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load conversations' }));
-    } finally {
+    }; finally {
       setLoadingConversations(false);
     }
   }, [user, currentConversationId]);
