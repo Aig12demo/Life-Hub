@@ -12,7 +12,7 @@ import {
   LogIn,
   ArrowLeft,
   Mail,
-  CheckCircle
+  CheckCircle,
   Eye,
   EyeOff,
   UserPlus,
