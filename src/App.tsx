@@ -16,7 +16,6 @@ import {
   Eye,
   EyeOff,
   UserPlus,
-  LogIn,
   Brain,
   Calendar,
   CheckSquare,
@@ -329,8 +328,11 @@ const SignInForm: React.FC<{
   onSwitchToSignUp: () => void;
   onSwitchToForgotPassword: () => void;
 }> = ({ onSwitchToSignUp, onSwitchToForgotPassword }) => {
-      setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load conversations' }));
-    }; finally {
+      try {
+  setVoiceFlowState(prev => ({ ...prev, error: 'Failed to load conversations' }));
+} catch (error) {
+  // Handle error if needed
+    } finally {
       setLoadingConversations(false);
     }
   }, [user, currentConversationId]);
