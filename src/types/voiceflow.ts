@@ -18,4 +18,8 @@ export interface ProcessVoiceCommandResponse {
   response?: string;
   error?: string;
   timestamp: string;
+  embeddings?: {
+    userMessage: number[];
+    assistantResponse: number[] | null;
+  };
 }

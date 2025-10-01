@@ -38,13 +38,15 @@ export class ConversationService {
     conversationId: string,
     role: 'user' | 'assistant',
     content: string,
-    isVoice: boolean = false
+    isVoice: boolean = false,
+    embedding?: number[]
   ): Promise<{ data: Message | null; error: any }> {
     const messageData: MessageInsert = {
       conversation_id: conversationId,
       role,
       content,
       is_voice: isVoice,
+      ...(embedding && { embedding: `[${embedding.join(',')}]` }),
     };
 
     const { data, error } = await supabase

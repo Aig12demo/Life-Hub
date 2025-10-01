@@ -273,16 +273,18 @@ const App: React.FC = () => {
     conversationId: string,
     role: 'user' | 'assistant',
     content: string,
-    isVoice: boolean = false
+    isVoice: boolean = false,
+    embedding?: number[]
   ) => {
     try {
       const { data, error } = await ConversationService.addMessage(
         conversationId,
         role,
         content,
-        isVoice
+        isVoice,
+        embedding
       );
-      
+
       if (error) {
         console.error('Error saving message:', error);
         setVoiceFlowState(prev => ({ ...prev, error: 'Failed to save message' }));
@@ -290,9 +292,9 @@ const App: React.FC = () => {
       }
 
       // Update conversations list to reflect new last_message_at
-      setConversations(prev => 
-        prev.map(conv => 
-          conv.id === conversationId 
+      setConversations(prev =>
+        prev.map(conv =>
+          conv.id === conversationId
             ? { ...conv, last_message_at: new Date().toISOString(), last_message_content: content }
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
@@ -489,9 +491,13 @@ const App: React.FC = () => {
   }, [forgotPasswordForm.email]);
 
   // Voice command processing
-  const processVoiceCommand = useCallback(async (message: string): Promise<string> => {
+  const processVoiceCommand = useCallback(async (message: string): Promise<ProcessVoiceCommandResponse> => {
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
+
     const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-voice-command`;
-    
+
     const headers = {
       'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
       'Content-Type': 'application/json',
@@ -507,6 +513,8 @@ const App: React.FC = () => {
       headers,
       body: JSON.stringify({
         message,
+        userId: user.id,
+        conversationId: currentConversationId,
         conversationHistory,
       }),
     });
@@ -516,13 +524,13 @@ const App: React.FC = () => {
     }
 
     const data: ProcessVoiceCommandResponse = await response.json();
-    
+
     if (!data.success) {
       throw new Error(data.error || 'Failed to process voice command');
     }
 
-    return data.response || 'I apologize, but I couldn\'t generate a response.';
-  }, [messages]);
+    return data;
+  }, [messages, user, currentConversationId]);
 
   const handleVoiceCommand = useCallback(async (message: string) => {
     if (!message.trim() || !user) return;
@@ -548,28 +556,40 @@ const App: React.FC = () => {
     setVoiceFlowState(prev => ({ ...prev, isProcessing: true, error: null }));
 
     try {
-      // Save user message to database
-      await saveMessageToDatabase(conversationId, 'user', message, true);
+      // Process voice command (this will fetch profile and generate embeddings)
+      const responseData = await processVoiceCommand(message);
 
-      // Process voice command
-      const response = await processVoiceCommand(message);
-      
+      // Save user message to database with embedding
+      await saveMessageToDatabase(
+        conversationId,
+        'user',
+        message,
+        true,
+        responseData.embeddings?.userMessage
+      );
+
       const assistantMessage: UIMessage = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
-        content: response,
+        content: responseData.response || '',
         timestamp: new Date(),
       };
 
       // Add assistant message to UI
       setMessages(prev => [...prev, assistantMessage]);
-      
-      // Save assistant message to database
-      await saveMessageToDatabase(conversationId, 'assistant', response, false);
-      
+
+      // Save assistant message to database with embedding
+      await saveMessageToDatabase(
+        conversationId,
+        'assistant',
+        responseData.response || '',
+        false,
+        responseData.embeddings?.assistantResponse || undefined
+      );
+
       // Speak the response
-      if (ttsSupported) {
-        speak(response);
+      if (ttsSupported && responseData.response) {
+        speak(responseData.response);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
