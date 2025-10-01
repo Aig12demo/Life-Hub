@@ -50,7 +50,7 @@ const App: React.FC = () => {
   const { user, loading: authLoading } = useAuth();
   
   // Navigation state
-  const [currentView, setCurrentView] = useState<'welcome' | 'login' | 'signup' | 'dashboard' | 'voice' | 'profile'>('welcome');
+  const [currentView, setCurrentView] = useState<'welcome' | 'login' | 'signup' | 'dashboard' | 'voice' | 'profile' | 'forgot-password'>('welcome');
   
   // Profile state
   const [userProfile, setUserProfile] = useState<Profile | null>(null);
@@ -62,6 +62,13 @@ const App: React.FC = () => {
     showPassword: false,
     loading: false,
     error: ''
+  });
+
+  const [forgotPasswordForm, setForgotPasswordForm] = useState({
+    email: '',
+    loading: false,
+    error: '',
+    success: false
   });
   
   const [signupForm, setSignupForm] = useState({
@@ -337,6 +344,10 @@ const App: React.FC = () => {
     setLoginForm(prev => ({ ...prev, password: e.target.value, error: '' }));
   }, []);
 
+  const handleForgotPasswordEmailChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setForgotPasswordForm(prev => ({ ...prev, email: e.target.value, error: '', success: false }));
+  }, []);
+
   const handleSignupEmailChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setSignupForm(prev => ({ ...prev, email: e.target.value, error: '' }));
   }, []);
@@ -449,6 +460,33 @@ const App: React.FC = () => {
     setCurrentConversationId(null);
     setCurrentConversation(null);
   }, []);
+
+  const handleForgotPassword = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!forgotPasswordForm.email) {
+      setForgotPasswordForm(prev => ({ ...prev, error: 'Please enter your email address' }));
+      return;
+    }
+
+    setForgotPasswordForm(prev => ({ ...prev, loading: true, error: '', success: false }));
+
+    try {
+      const { error } = await authHelpers.resetPassword(forgotPasswordForm.email);
+
+      if (error) {
+        setForgotPasswordForm(prev => ({ ...prev, error: error.message, loading: false }));
+      } else {
+        setForgotPasswordForm(prev => ({ ...prev, success: true, loading: false }));
+      }
+    } catch (err) {
+      setForgotPasswordForm(prev => ({
+        ...prev,
+        error: 'An unexpected error occurred',
+        loading: false
+      }));
+    }
+  }, [forgotPasswordForm.email]);
 
   // Voice command processing
   const processVoiceCommand = useCallback(async (message: string): Promise<string> => {
@@ -606,6 +644,10 @@ const App: React.FC = () => {
   const navigateToVoice = useCallback(() => setCurrentView('voice'), []);
   const navigateToWelcome = useCallback(() => setCurrentView('welcome'), []);
   const navigateToProfile = useCallback(() => setCurrentView('profile'), []);
+  const navigateToForgotPassword = useCallback(() => {
+    setForgotPasswordForm({ email: loginForm.email, loading: false, error: '', success: false });
+    setCurrentView('forgot-password');
+  }, [loginForm.email]);
 
   // Loading screen
   if (authLoading) {
@@ -755,6 +797,16 @@ const App: React.FC = () => {
               </div>
             )}
 
+            <div className="text-right">
+              <button
+                type="button"
+                onClick={navigateToForgotPassword}
+                className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors"
+              >
+                Forgot Password?
+              </button>
+            </div>
+
             <button
               type="submit"
               disabled={loginForm.loading}
@@ -779,6 +831,92 @@ const App: React.FC = () => {
                 className="text-blue-600 hover:text-blue-700 font-semibold"
               >
                 Sign up
+              </button>
+            </p>
+            <button
+              onClick={navigateToWelcome}
+              className="text-gray-500 hover:text-gray-700 text-sm mt-2"
+            >
+              ← Back to home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Forgot Password Screen
+  if (currentView === 'forgot-password') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <Brain className="w-12 h-12 text-blue-600 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-800">Reset Password</h2>
+            <p className="text-gray-600">Enter your email to receive a password reset link</p>
+          </div>
+
+          {forgotPasswordForm.success ? (
+            <div className="space-y-6">
+              <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
+                <p className="font-medium mb-1">Check your email!</p>
+                <p className="text-sm">We've sent a password reset link to {forgotPasswordForm.email}</p>
+              </div>
+
+              <button
+                onClick={navigateToLogin}
+                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center"
+              >
+                <LogIn className="w-5 h-5 mr-2" />
+                Back to Sign In
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleForgotPassword} className="space-y-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  value={forgotPasswordForm.email}
+                  onChange={handleForgotPasswordEmailChange}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+                  placeholder="Enter your email"
+                  required
+                />
+              </div>
+
+              {forgotPasswordForm.error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+                  {forgotPasswordForm.error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={forgotPasswordForm.loading}
+                className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              >
+                {forgotPasswordForm.loading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    Send Reset Link
+                  </>
+                )}
+              </button>
+            </form>
+          )}
+
+          <div className="mt-6 text-center">
+            <p className="text-gray-600">
+              Remember your password?{' '}
+              <button
+                onClick={navigateToLogin}
+                className="text-blue-600 hover:text-blue-700 font-semibold"
+              >
+                Sign in
               </button>
             </p>
             <button
@@ -1321,17 +1459,6 @@ const App: React.FC = () => {
                   className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
                   disabled={voiceFlowState.isProcessing}
                 />
-                {/* Forgot Password Link */}
-                <div className="text-right mb-6">
-                  <button
-                    type="button"
-                    onClick={() => setAuthMode('forgotPassword')}
-                    className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors"
-                  >
-                    Forgot Password?
-                  </button>
-                </div>
-
                 <button
                   type="submit"
                   disabled={!textInput.trim() || voiceFlowState.isProcessing}
